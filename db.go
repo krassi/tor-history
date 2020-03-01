@@ -22,6 +22,7 @@ type DB struct {
 	stmtTorQueries *sql.Stmt
 
 	stmtAddTorRelays        *sql.Stmt
+	stmtUpdTorRelaysRLS     *sql.Stmt
 	stmtLoadLatestTorRelays *sql.Stmt
 
 	// Caches
@@ -38,6 +39,14 @@ type DB struct {
 	exitPolSum2idMap   map[string]string
 	exitPolV6Sum2idMap map[string]string
 
+	// Caches of last item inserted before a timestamp
+	latestOr4 map[string](map[string](map[string]string))
+	latestOr6 map[string](map[string](map[string]string))
+	latestEx4 map[string](map[string](map[string]string))
+	latestEx6 map[string](map[string](map[string]string))
+	latestDi4 map[string](map[string](map[string]string))
+	latestDi6 map[string](map[string](map[string]string))
+
 	// Cache related SQL statements
 	stmtAddNodeFingerprints *sql.Stmt
 	stmtAddCountryCode      *sql.Stmt
@@ -47,6 +56,7 @@ type DB struct {
 	stmtAddVersion          *sql.Stmt
 	stmtAddContact          *sql.Stmt
 
+	// Prepared SQL statements
 	stmtGetNodeIdByFp       *sql.Stmt
 	stmtGetRegionIdByName   *sql.Stmt
 	stmtGetCityIdByName     *sql.Stmt
@@ -61,6 +71,20 @@ type DB struct {
 	stmtGetExitPolicySummaryIdByName   *sql.Stmt
 	stmtAddExitPolicyV6Summary         *sql.Stmt
 	stmtGetExitPolicyV6SummaryIdByName *sql.Stmt
+
+	stmtAddOrV4   *sql.Stmt
+	stmtAddExitV4 *sql.Stmt
+	stmtAddDirV4  *sql.Stmt
+	stmtAddOrV6   *sql.Stmt
+	stmtAddExitV6 *sql.Stmt
+	stmtAddDirV6  *sql.Stmt
+
+	stmtUpdOr4RLS *sql.Stmt
+	stmtUpdEx4RLS *sql.Stmt
+	stmtUpdDi4RLS *sql.Stmt
+	stmtUpdOr6RLS *sql.Stmt
+	stmtUpdEx6RLS *sql.Stmt
+	stmtUpdDi6RLS *sql.Stmt
 }
 
 //***************************************************************************
@@ -87,6 +111,7 @@ func NewDB(Username string, Password string, Host string, Port string, DBName st
 		"INSERT INTO TorQueries (Version, Relays_published, Bridges_published) VALUES( ?, ?, ?)": &db.stmtTorQueries,
 
 		"INSERT INTO TorRelays (ID_NodeFingerprints, Nickname, Last_changed_address_or_port, First_seen, flags, jsd) VALUES(?, ?, ?, ?, ?, ?);": &db.stmtAddTorRelays,
+		"UPDATE TorRelays SET RecordLastSeen = ? WHERE ID = ?;":                                                                                 &db.stmtUpdTorRelaysRLS,
 
 		"INSERT INTO NodeFingerprints (Fingerprint) VALUES( ?)":  &db.stmtAddNodeFingerprints,
 		"SELECT ID FROM NodeFingerprints WHERE Fingerprint = ?;": &db.stmtGetNodeIdByFp,
@@ -108,11 +133,28 @@ func NewDB(Username string, Password string, Host string, Port string, DBName st
 		"SELECT ID FROM ExitPolicySummaries WHERE ExitPolicySummary = ?;":     &db.stmtGetExitPolicySummaryIdByName,
 		"INSERT INTO ExitPolicyV6Summaries (ExitPolicyV6Summary) VALUES( ?)":  &db.stmtAddExitPolicyV6Summary,
 		"SELECT ID FROM ExitPolicyV6Summaries WHERE ExitPolicyV6Summary = ?;": &db.stmtGetExitPolicyV6SummaryIdByName,
+
+		"INSERT INTO Or_addresses_v4 (ID_NodeFingerprints, RecordTimeInserted, RecordLastSeen, ip4, port) VALUES(?, ?, ?, INET_ATON(?), ?)":  &db.stmtAddOrV4,
+		"INSERT INTO Exit_addresses_v4 (ID_NodeFingerprints, RecordTimeInserted, RecordLastSeen, ip4) VALUES(?, ?, ?, INET_ATON(?))":         &db.stmtAddExitV4,
+		"INSERT INTO Dir_addresses_v4 (ID_NodeFingerprints, RecordTimeInserted, RecordLastSeen, ip4, port) VALUES(?, ?, ?, INET_ATON(?), ?)": &db.stmtAddDirV4,
+
+		"INSERT INTO Or_addresses_v6 (ID_NodeFingerprints, RecordTimeInserted, RecordLastSeen, ip6, port) VALUES(?, ?, ?, INET6_ATON(?), ?)":  &db.stmtAddOrV6,
+		"INSERT INTO Exit_addresses_v6 (ID_NodeFingerprints, RecordTimeInserted, RecordLastSeen, ip6) VALUES(?, ?, ?, INET6_ATON(?))":         &db.stmtAddExitV6,
+		"INSERT INTO Dir_addresses_v6 (ID_NodeFingerprints, RecordTimeInserted, RecordLastSeen, ip6, port) VALUES(?, ?, ?, INET6_ATON(?), ?)": &db.stmtAddDirV6,
+
+		"UPDATE Or_addresses_v4 SET RecordLastSeen=? WHERE ID = ?":   &db.stmtUpdOr4RLS,
+		"UPDATE Exit_addresses_v4 SET RecordLastSeen=? WHERE ID = ?": &db.stmtUpdEx4RLS,
+		"UPDATE Dir_addresses_v4 SET RecordLastSeen=? WHERE ID = ?":  &db.stmtUpdDi4RLS,
+
+		"UPDATE Or_addresses_v6 SET RecordLastSeen=? WHERE ID = ?;":   &db.stmtUpdOr6RLS,
+		"UPDATE Exit_addresses_v6 SET RecordLastSeen=? WHERE ID = ?;": &db.stmtUpdEx6RLS,
+		"UPDATE Dir_addresses_v6 SET RecordLastSeen=? WHERE ID = ?;":  &db.stmtUpdDi6RLS,
 	}
 
 	for stmt, storage := range SQLStatements {
 		*storage, err = db.dbh.Prepare(stmt)
 		if err != nil {
+			fmt.Println("PANIC: SQL Statement: " + stmt)
 			panic("func NewDB: for: " + err.Error())
 		}
 	}
@@ -128,7 +170,7 @@ func NewDBFromConfig(cfg TorHistoryConfig) *DB {
 
 func (db *DB) initCaches() {
 	// ###### Refactor
-	ifPrintln(2, "initCaches: ")
+	ifPrintln(2, "initCaches: Initialiazing memory caches from database")
 	db.fp2idMap = db.SQLQueryKeyValue("SELECT ID, Fingerprint FROM NodeFingerprints;")
 	db.region2idMap = db.SQLQueryKeyValue("SELECT ID, RegionName FROM Regions;")
 	db.city2idMap = db.SQLQueryKeyValue("SELECT ID, CityName FROM Cities;")
@@ -140,10 +182,36 @@ func (db *DB) initCaches() {
 	db.exitPol2idMap = db.SQLQueryKeyValue("SELECT ID, ExitPolicy FROM ExitPolicies;")
 	db.exitPolSum2idMap = db.SQLQueryKeyValue("SELECT ID, ExitPolicySummary FROM ExitPolicySummaries;")
 	db.exitPolV6Sum2idMap = db.SQLQueryKeyValue("SELECT ID, ExitPolicyV6Summary FROM ExitPolicyV6Summaries;")
+
+	// Load latest records BEFORE the current insert timestamp. Note this allows us to insert older data files (retroactively)
+	db.latestOr4 = db.SQLQueryTYPEOfMaps("mapOfMapOfMaps", "SELECT ID_NodeFingerprints, INET_NTOA(ip4) ip4, ID, DATE_FORMAT( RecordLastSeen, '%Y%m%d%H%i%s') as RecordLastSeen, port "+
+		"FROM Or_addresses_v4 WHERE (ID_NodeFingerprints, RecordLastSeen) IN "+
+		"(SELECT ID_NodeFingerprints, max(RecordLastSeen) FROM Or_addresses_v4 WHERE RecordLastSeen <= "+g_consensusDLTS+
+		" GROUP BY ID_NodeFingerprints);").(map[string](map[string](map[string]string)))
+
+	db.latestOr6 = db.SQLQueryTYPEOfMaps("mapOfMapOfMaps", "SELECT ID_NodeFingerprints, INET6_NTOA(ip6) ip6, ID, DATE_FORMAT( RecordLastSeen, '%Y%m%d%H%i%s') as RecordLastSeen, port FROM Or_addresses_v6 "+
+		"WHERE (ID_NodeFingerprints, RecordLastSeen) IN (SELECT ID_NodeFingerprints, max(RecordLastSeen) FROM Or_addresses_v4 "+
+		"WHERE RecordLastSeen <= "+g_consensusDLTS+" GROUP BY ID_NodeFingerprints);").(map[string](map[string](map[string]string)))
+
+	db.latestEx4 = db.SQLQueryTYPEOfMaps("mapOfMapOfMaps", "SELECT ID_NodeFingerprints, INET_NTOA(ip4) ip4, ID, DATE_FORMAT( RecordLastSeen, '%Y%m%d%H%i%s') as RecordLastSeen FROM Exit_addresses_v4 "+
+		"WHERE (ID_NodeFingerprints, RecordLastSeen) IN (SELECT ID_NodeFingerprints, max(RecordLastSeen) "+
+		"FROM Exit_addresses_v4 WHERE RecordLastSeen <= "+g_consensusDLTS+" GROUP BY ID_NodeFingerprints);").(map[string](map[string](map[string]string)))
+
+	db.latestEx6 = db.SQLQueryTYPEOfMaps("mapOfMapOfMaps", "SELECT ID_NodeFingerprints, INET6_NTOA(ip6) ip6, ID, DATE_FORMAT( RecordLastSeen, '%Y%m%d%H%i%s') as RecordLastSeen FROM Exit_addresses_v6 "+
+		"WHERE (ID_NodeFingerprints, RecordLastSeen) IN (SELECT ID_NodeFingerprints, max(RecordLastSeen) FROM Exit_addresses_v6 "+
+		"WHERE RecordLastSeen <= "+g_consensusDLTS+" GROUP BY ID_NodeFingerprints);").(map[string](map[string](map[string]string)))
+
+	db.latestDi4 = db.SQLQueryTYPEOfMaps("mapOfMapOfMaps", "SELECT ID_NodeFingerprints, INET_NTOA(ip4) ip4, ID, DATE_FORMAT( RecordLastSeen, '%Y%m%d%H%i%s') as RecordLastSeen, port FROM Dir_addresses_v4 "+
+		"WHERE (ID_NodeFingerprints, RecordLastSeen) IN (SELECT ID_NodeFingerprints, max(RecordLastSeen) FROM Dir_addresses_v4 "+
+		"WHERE RecordLastSeen <= "+g_consensusDLTS+" GROUP BY ID_NodeFingerprints);").(map[string](map[string](map[string]string)))
+
+	db.latestDi6 = db.SQLQueryTYPEOfMaps("mapOfMapOfMaps", "SELECT ID_NodeFingerprints, INET6_NTOA(ip6) ip6, ID, DATE_FORMAT( RecordLastSeen, '%Y%m%d%H%i%s') as RecordLastSeen, port FROM Dir_addresses_v6 "+
+		"WHERE (ID_NodeFingerprints, RecordLastSeen) IN (SELECT ID_NodeFingerprints, max(RecordLastSeen) FROM Dir_addresses_v4 "+
+		"WHERE RecordLastSeen <= "+g_consensusDLTS+" GROUP BY ID_NodeFingerprints);").(map[string](map[string](map[string]string)))
 }
 
 func (db *DB) initCountryNameCache() {
-	ifPrintln(2, "initCountryNameCache: ")
+	ifPrintln(2, "initCountryNameCache: Initialiazing memocountry codes cache from database")
 	db.cc2cyNameMap = db.SQLQueryKeyValue("SELECT LOWER(CC) CC, CountryName FROM Countries;") // Uses LOWER() just in case the database was initialized with capital CC
 }
 
@@ -191,6 +259,7 @@ func (db *DB) SQLQueryKeyValue(query string) map[string]string {
 	return resultMap
 }
 
+/* Implement in TYPEOfMaps
 func (db *DB) SQLQuerySliceOfMaps(query string) [](map[string]string) {
 	rows, err := db.dbh.Query(query)
 	if err != nil {
@@ -202,8 +271,7 @@ func (db *DB) SQLQuerySliceOfMaps(query string) [](map[string]string) {
 	if err != nil {
 		panic("func SQLQuerySliceOfMaps: " + err.Error()) // TODO
 	}
-	ifPrintln(6, fmt.Sprintf("Number of columns returned: %d\n", len(columns))) // DEBUG
-	//fmt.Println("Columns returned:\n", columns)                  // DEBUG
+	ifPrintln(6, fmt.Sprintf("Number of columns returned: %d\n", len(columns)))
 
 	// Allocate row buffer for each column of type sql.RawBytes
 	// Data from rows.scan will be stored there
@@ -232,6 +300,7 @@ func (db *DB) SQLQuerySliceOfMaps(query string) [](map[string]string) {
 	}
 	return result_slice
 }
+*/
 
 // Returs the query as a map or slice of maps, depending on the TYPE argument
 // The key for the outer map is the first element in the SELECT query
@@ -239,10 +308,12 @@ func (db *DB) SQLQuerySliceOfMaps(query string) [](map[string]string) {
 // TYPE one of:
 //		sliceOfMaps:	[](map[string]string)
 //		mapOfMaps:		map[string](map[string]string)
+//		mapOfMapOfMaps: map[string](map[string](map[string]string))
 //		sliceOfSlice
 func (db *DB) SQLQueryTYPEOfMaps(TYPE string, query string) interface{} {
-	if TYPE != "sliceOfMaps" && TYPE != "mapOfMaps" && TYPE != "sliceOfSlice" {
-		panic("SQLQueryTYPEOfMaps: TYPE can be only one of the following: sliceOfMaps, mapOfMaps, sliceOfSlice")
+	ifPrintln(4, "func SQLQueryTYPEOfMaps: ("+TYPE+"): "+query)
+	if TYPE != "sliceOfMaps" && TYPE != "mapOfMaps" && TYPE != "mapOfMapOfMaps" && TYPE != "sliceOfSlice" {
+		panic("SQLQueryTYPEOfMaps: Supplied TYPE='" + TYPE + "' TYPE can be only one of the following: sliceOfMaps, mapOfMapOfMaps, mapOfMaps, sliceOfSlice")
 	}
 
 	rows, err := db.dbh.Query(query)
@@ -271,6 +342,7 @@ func (db *DB) SQLQueryTYPEOfMaps(TYPE string, query string) interface{} {
 	// Return result buffers
 	result_slice := make([](map[string]string), 0)
 	result_map := make(map[string](map[string]string))
+	result_map_map := make(map[string](map[string](map[string]string)))
 
 	var result_row map[string]string
 	for rows.Next() {
@@ -284,14 +356,27 @@ func (db *DB) SQLQueryTYPEOfMaps(TYPE string, query string) interface{} {
 		}
 		if TYPE == "sliceOfMaps" {
 			result_slice = append(result_slice, result_row)
-		} else { // TYPE != "mapOfMaps, later: TYPE != "sliceOfSlice"
+		} else if TYPE == "mapOfMaps" {
 			result_map[string(rowBuffer[0])] = result_row
+		} else if TYPE == "mapOfMapOfMaps" { // double nested map
+			if result_map_map[string(rowBuffer[0])] == nil {
+				// Allocating memory for sub-maps for each of the main keys
+				result_map_map[string(rowBuffer[0])] = make(map[string](map[string]string))
+			}
+			result_map_map[string(rowBuffer[0])][string(rowBuffer[1])] = result_row
+		} else { // later: TYPE != "sliceOfSlice"
+			panic("func SQLQueryTYPEOfMaps() default case")
 		}
 	}
+
 	if TYPE == "sliceOfMaps" {
 		return result_slice
-	} else { // TYPE != "mapOfMaps, later: TYPE != "sliceOfSlice"
+	} else if TYPE == "mapOfMaps" {
 		return result_map
+	} else if TYPE == "mapOfMapOfMaps" {
+		return result_map_map
+	} else { // later: TYPE != "sliceOfSlice"
+		return nil
 	}
 }
 
@@ -335,8 +420,8 @@ func (db *DB) dbGetKeyByValue(valueType string, value string) string {
 	}
 
 	if row.Next() { // We have a problem if more than one lines match the fingerprint
-		//for now gracefully ignore - otherwise it should bounce it here
-		ifPrintln(3, fmt.Sprintf("dbGetKeyByValue: MORE THAN ONE FINGERPRINTES RETURNED for %s.", value))
+		// for now gracefully ignore - otherwise it should bounce it here
+		ifPrintln(-1, fmt.Sprintf("dbGetKeyByValue: MORE THAN ONE FINGERPRINTES RETURNED for %s.", value))
 	}
 	return id
 }
@@ -370,6 +455,143 @@ func (db *DB) addToTorQueries(version string, relays_published string, bridges_p
 	//	lastID = fmt.Sprintf("%d", lastID_int64)
 }
 
+func ipPort(input string) (string, string) {
+	var ip, port string
+	if input[0] == '[' { // IPv6
+		ip6AndPort := strings.SplitN(input, "]", 2)
+		ip = ip6AndPort[0][1:]
+		if len(ip6AndPort) >= 2 {
+			port = ip6AndPort[1][1:]
+		}
+	} else {
+		ip4AndPort := strings.SplitN(input, ":", 2)
+		ip = ip4AndPort[0]
+		if len(ip4AndPort) >= 2 {
+			port = ip4AndPort[1]
+		}
+	}
+	return ip, port
+}
+
+func (db *DB) addToIP(table string, fpid string, tsIns string, tsRls string, ipAndPort string) {
+	// Check if it is IPv4 or IPv6
+	fmt.Println("func addToIP: " + ipAndPort)
+	if len(ipAndPort) == 0 {
+		fmt.Println("Empty IP/port")
+		return
+	}
+
+	var stmt *sql.Stmt
+	if ipAndPort[0] == '[' { // IPv6
+		switch table {
+		case "Or":
+			stmt = db.stmtAddOrV6
+			break
+		case "Exit":
+			stmt = db.stmtAddExitV6
+			break
+		case "Dir":
+			stmt = db.stmtAddDirV6
+			break
+		}
+	} else {
+		switch table {
+		case "Or":
+			stmt = db.stmtAddOrV4
+			break
+		case "Exit":
+			stmt = db.stmtAddExitV4
+			break
+		case "Dir":
+			stmt = db.stmtAddDirV4
+			break
+		}
+	}
+	var err error
+	if table == "Exit" {
+		ip := ipAndPort
+		_, err = stmt.Exec(fpid, tsIns, tsRls, ip)
+	} else {
+		ip, port := ipPort(ipAndPort)
+		_, err = stmt.Exec(fpid, tsIns, tsRls, ip, port)
+	}
+	if err != nil {
+		panic("func addToIPv(" + table + "): " + err.Error())
+	}
+
+	fmt.Println("addToIP: END")
+}
+
+func (db *DB) updateIfNeededRelayAddressRLS(table string, fpid string, tsRls string, or string) {
+	ifPrintln(2, fmt.Sprintf("func updateIfNeededRelayAddressRLS: %s, %s, %s, %s", table, fpid, tsRls, or))
+	ip, port := ipPort(or)
+	var rec (map[string]string)
+	var updStmt *sql.Stmt
+	if or[0] == '[' { // IPv6
+		switch table {
+		case "Or":
+			rec = db.latestOr6[fpid][ip]
+			updStmt = db.stmtUpdOr6RLS
+			break
+		case "Ex":
+			rec = db.latestEx6[fpid][ip]
+			updStmt = db.stmtUpdEx6RLS
+			break
+		case "Di":
+			rec = db.latestDi6[fpid][ip]
+			updStmt = db.stmtUpdEx6RLS
+			break
+		default:
+			panic("updateIfNeededRelayAddressRLS: V6 swtch/default: ")
+		}
+	} else {
+		switch table {
+		case "Or":
+			rec = db.latestOr4[fpid][ip]
+			updStmt = db.stmtUpdOr4RLS
+			break
+		case "Ex":
+			rec = db.latestEx4[fpid][ip]
+			updStmt = db.stmtUpdEx4RLS
+			break
+		case "Di":
+			rec = db.latestDi4[fpid][ip]
+			updStmt = db.stmtUpdDi4RLS
+			break
+		default:
+			panic("updateIfNeededRelayAddressRLS: V4 swtch/default: ")
+		}
+	}
+
+	if rec["port"] == port {
+		if rec["RecordLastSeen"] == tsRls {
+			ifPrintln(2, "COMPLETE MATCH: no need to update RLS for: "+tsRls+"; "+rec["RecordLastSeen"]+"; ")
+		} else {
+			ifPrintln(2, fmt.Sprintf("Updating RLS in %s. Rec id: %s. New time: %s", table, rec["ID"], tsRls))
+			_, err := updStmt.Exec(tsRls, rec["ID"])
+			if err != nil {
+				panic("func updateTorRelayRLS: " + err.Error())
+			}
+		}
+	} else {
+		fmt.Println("NO MATCH: Need to insert in DB and cache")
+		// Inserting into DB; there is no need to insert into the cache as it is guaranteed we are not
+		// going to go back to that fingerprint in this program run
+
+		//#####
+		g_db.addToIP(table, fpid, g_consensusDLTS, g_consensusDLTS, or)
+	}
+}
+
+func (db *DB) updateTorRelayRLS(id string, newTS string) {
+	ifPrintln(4, "updateTorRelayRLS: id: "+id+"; new timestamp: "+newTS)
+	_, err := db.stmtUpdTorRelaysRLS.Exec(newTS, id)
+	if err != nil {
+		panic("func updateTorRelayRLS: " + err.Error())
+	}
+	ifPrintln(4, "updateTorRelayRLS: success")
+}
+
 //***************************************************************************
 // Add key/value variations
 
@@ -387,14 +609,14 @@ func (db *DB) addKeyValue(valueType string, value string) string {
 }
 
 func (db *DB) addKeyValue_real(valueType string, value string, id string) string {
-	ifPrintln(2, "func addKeyValue_real("+valueType+", "+value+", "+id+"): ")
+	ifPrintln(4, "func addKeyValue_real("+valueType+", "+value+", "+id+"): ")
 	var lastID string
 	var err error
 	var res sql.Result
 	var cache *map[string]string
 
 	// Note that the caches are updated prior to the actual DB transaction and return code
-	//verification. That is OK because in case of a DB transaction failure the program would exit
+	// verification. That is OK because in case of a DB transaction failure the program would exit
 	switch valueType {
 	case "fingerprint":
 		res, err = db.stmtAddNodeFingerprints.Exec(value)
@@ -455,7 +677,7 @@ func (db *DB) addKeyValue_real(valueType string, value string, id string) string
 			panic("func addKeyValue_real: " + err.Error())
 		}
 	}
-	ifPrintln(2, "func addKeyValue_real: RETURN: "+lastID)
+	ifPrintln(4, "func addKeyValue_real: RETURN: "+lastID)
 	return lastID
 }
 
@@ -475,7 +697,7 @@ func (db *DB) cc2countryName(cc string) string {
 // If the value is in the corresponding cache, return it.
 // If not in the cache, update the cache, enter in the DB and return the DB id
 func (db *DB) value2id(valueType string, value string) string {
-	ifPrintln(2, "func value2id("+valueType+", "+value+")")
+	ifPrintln(4, "func value2id("+valueType+", "+value+")")
 	var ok bool
 	var id string
 	var cache *map[string]string
@@ -515,10 +737,10 @@ func (db *DB) value2id(valueType string, value string) string {
 			ifPrintln(4, fmt.Sprintf("Cache miss for %s %s, added to DB, returning %s.\n", valueType, value, id))
 		} else {
 			id = ""
-			ifPrintln(2, fmt.Sprintf("Cache miss on country ID %s, returning %s.\n", value, id))
+			ifPrintln(4, fmt.Sprintf("Cache miss on country ID %s, returning %s.\n", value, id))
 		}
 	}
-	ifPrintln(2, "func value2id: RETURN id: "+id)
+	ifPrintln(4, "func value2id: RETURN id: "+id)
 	return id
 }
 
