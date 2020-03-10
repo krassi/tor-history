@@ -7,8 +7,7 @@ CREATE TABLE TorQueries (
 	queryTime TIMESTAMP NOT NULL,
 	Relays_published DATETIME NOT NULL, 
 	Bridges_published DATETIME NOT NULL,
-	PRIMARY KEY (ID),
-	UNIQUE(Fingerprint)
+	PRIMARY KEY (ID)
 );
 
 CREATE TABLE NodeFingerprints(
@@ -175,3 +174,23 @@ GRANT INSERT, UPDATE, SELECT ON tor_history.Exit_addresses_v4 TO 'tor-rw'@'%';
 GRANT INSERT, UPDATE, SELECT ON tor_history.Exit_addresses_v6 TO 'tor-rw'@'%';
 GRANT INSERT, UPDATE, SELECT ON tor_history.Dir_addresses_v4 TO 'tor-rw'@'%';
 GRANT INSERT, UPDATE, SELECT ON tor_history.Dir_addresses_v6 TO 'tor-rw'@'%';
+
+// Localhost user
+GRANT INSERT, SELECT ON tor_history.NodeFingerprints TO 'tor-rw'@'localhost';
+GRANT INSERT, UPDATE, SELECT ON tor_history.TorRelays TO 'tor-rw'@'localhost';
+GRANT INSERT, SELECT ON tor_history.Countries TO 'tor-rw'@'localhost';
+GRANT INSERT, SELECT ON tor_history.Regions TO 'tor-rw'@'localhost';
+GRANT INSERT, SELECT ON tor_history.Cities TO 'tor-rw'@'localhost';
+GRANT INSERT, SELECT ON tor_history.Platforms TO 'tor-rw'@'localhost';
+GRANT INSERT, SELECT ON tor_history.Versions TO 'tor-rw'@'localhost';
+GRANT INSERT, SELECT ON tor_history.Contacts TO 'tor-rw'@'localhost';
+GRANT INSERT, SELECT ON tor_history.ExitPolicies TO 'tor-rw'@'localhost';
+GRANT INSERT, SELECT ON tor_history.ExitPolicySummaries TO 'tor-rw'@'localhost';
+GRANT INSERT, SELECT ON tor_history.ExitPolicyV6Summaries TO 'tor-rw'@'localhost';
+
+GRANT INSERT, UPDATE, SELECT ON tor_history.Or_addresses_v4 TO 'tor-rw'@'localhost';
+GRANT INSERT, UPDATE, SELECT ON tor_history.Or_addresses_v6 TO 'tor-rw'@'localhost';
+GRANT INSERT, UPDATE, SELECT ON tor_history.Exit_addresses_v4 TO 'tor-rw'@'localhost';
+GRANT INSERT, UPDATE, SELECT ON tor_history.Exit_addresses_v6 TO 'tor-rw'@'localhost';
+GRANT INSERT, UPDATE, SELECT ON tor_history.Dir_addresses_v4 TO 'tor-rw'@'localhost';
+GRANT INSERT, UPDATE, SELECT ON tor_history.Dir_addresses_v6 TO 'tor-rw'@'localhost';
