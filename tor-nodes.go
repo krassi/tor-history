@@ -137,9 +137,9 @@ func getConsensusDLTimestamp(cmdlineTS string) string {
 			ifPrintln(4, "CUSTOM FORMAT: "+*f_fmtConsensusDownloadTime)
 			formats = append(formats, *f_fmtConsensusDownloadTime)
 		} else {
-			formats = []string{"2006-01-02_15:04:05", "20060102150405", time.RFC3339,
-				time.RFC3339Nano, time.ANSIC, time.UnixDate, time.RFC822, time.RFC822Z,
-				time.RFC850, time.RFC1123, time.RFC1123Z, time.RubyDate}
+			formats = []string{"2006-01-02_15:04:05", "2006-01-02_15:04", "20060102150405",
+				"200601021504", time.RFC3339, time.RFC3339Nano, time.ANSIC, time.UnixDate,
+				time.RFC822, time.RFC822Z, time.RFC850, time.RFC1123, time.RFC1123Z, time.RubyDate}
 		}
 		var err error
 		for _, f := range formats {
@@ -232,7 +232,7 @@ func main() {
 	var lrd map[string](map[string]string) // lrd = latest relay data
 	lrd = g_db.SQLQueryTYPEOfMaps("mapOfMaps",
 		`SELECT Fingerprint, tr.ID id, Nickname, RecordTimeInserted, DATE_FORMAT( RecordLastSeen, "%Y%m%d%H%i%s") as RecordLastSeen, ID_Countries Country, CityName, 
-			PlatformName, VersionName, ContactName, First_seen, Last_changed_address_or_port, ExitPolicy, ExitPolicySummary, ExitPolicyV6Summary , ID_Versions, ID_Contacts, ID_NodeFingerprints
+			PlatformName, VersionName, ContactName, First_seen, Last_changed_address_or_port, ExitPolicy, ExitPolicySummary, ExitPolicyV6Summary , tr.ID_Versions, tr.ID_Contacts, ID_NodeFingerprints
 			FROM TorRelays tr
 			LEFT JOIN NodeFingerprints nf ON tr.ID_NodeFingerprints = nf.ID 
 			LEFT JOIN Cities c ON ID_Cities = c.ID
@@ -248,7 +248,7 @@ func main() {
 	// #####
 
 	for _, relay := range tor_response.Relays {
-		ifPrintln(2, "\n== "+relay.Fingerprint+" ==========================================")
+		ifPrintln(3, "\n== Processing: "+relay.Fingerprint+" ==========================================")
 		// Check if this is a newer record
 		// Prepare JSON values for comparisson
 		js_exitp, _ := json.Marshal(relay.Exit_policy)
@@ -262,7 +262,7 @@ func main() {
 		fp := relay.Fingerprint
 		ifPrintln(6, "Comparing records for fingerprint: "+fp)
 		if recordsMatch(relay, lrd[fp]) { // MATCH - just update RLS
-			ifPrintln(2, "DEBUG: g_consensusDLTS: "+g_consensusDLTS+"; lrd[fp]['RecordLastSeen']: "+lrd[fp]["RecordLastSeen"])
+			ifPrintln(4, "DEBUG: g_consensusDLTS: "+g_consensusDLTS+"; lrd[fp]['RecordLastSeen']: "+lrd[fp]["RecordLastSeen"])
 			if g_consensusDLTS == lrd[fp]["RecordLastSeen"] {
 				fmt.Println("DEBUG: TorRelay records TIMESTAMPS MATCH!!! No DB update need at all")
 			} else {
@@ -407,7 +407,7 @@ func recordsMatch(relay TorDetails, lrdfp map[string]string) bool {
 		string(js_exitps) == lrdfp["ExitPolicySummary"] &&
 		string(js_exitps6) == lrdfp["ExitPolicyV6Summary"] {
 
-		ifPrintln(2, "MATCHED: "+lrdfp["Fingerprint"])
+		ifPrintln(3, "MATCHED: "+lrdfp["Fingerprint"])
 		return true
 	} else {
 		// #### Just for debugging - delete later

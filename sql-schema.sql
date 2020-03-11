@@ -40,7 +40,7 @@ CREATE TABLE Cities (
 
 CREATE TABLE Platforms (
 	ID SMALLINT UNSIGNED AUTO_INCREMENT NOT NULL, 
-	PlatformName CHAR(45) NOT NULL,
+	PlatformName CHAR(55) NOT NULL,
 	PRIMARY KEY (ID),
 	UNIQUE(PlatformName)
 );
@@ -54,7 +54,7 @@ CREATE TABLE Versions (
 
 CREATE TABLE Contacts (
 	ID SMALLINT UNSIGNED AUTO_INCREMENT NOT NULL, 
-	ContactName VARCHAR(600) NOT NULL,
+	ContactName VARCHAR(700) NOT NULL,
 	PRIMARY KEY (ID),
 	UNIQUE(ContactName)
 );
@@ -157,7 +157,7 @@ GRANT INSERT, DELETE, SELECT ON tor_history.TorQueries TO 'tor-rw'@'%' IDENTIFIE
 GRANT INSERT, DELETE, SELECT ON tor_history.TorQueries TO 'tor-rw'@'localhost' IDENTIFIED BY <password>;
 
 GRANT INSERT, SELECT ON tor_history.NodeFingerprints TO 'tor-rw'@'%';
-GRANT INSERT, SELECT ON tor_history.TorRelays TO 'tor-rw'@'%';
+GRANT INSERT, UPDATE, SELECT ON tor_history.TorRelays TO 'tor-rw'@'%';
 GRANT INSERT, SELECT ON tor_history.Countries TO 'tor-rw'@'%';
 GRANT INSERT, SELECT ON tor_history.Regions TO 'tor-rw'@'%';
 GRANT INSERT, SELECT ON tor_history.Cities TO 'tor-rw'@'%';

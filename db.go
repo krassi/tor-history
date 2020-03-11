@@ -208,6 +208,7 @@ func (db *DB) initCaches() {
 	db.latestDi6 = db.SQLQueryTYPEOfMaps("mapOfMapOfMaps", "SELECT ID_NodeFingerprints, INET6_NTOA(ip6) ip6, ID, DATE_FORMAT( RecordLastSeen, '%Y%m%d%H%i%s') as RecordLastSeen, port FROM Dir_addresses_v6 "+
 		"WHERE (ID_NodeFingerprints, RecordLastSeen) IN (SELECT ID_NodeFingerprints, max(RecordLastSeen) FROM Dir_addresses_v4 "+
 		"WHERE RecordLastSeen <= "+g_consensusDLTS+" GROUP BY ID_NodeFingerprints);").(map[string](map[string](map[string]string)))
+	ifPrintln(2, "initCaches: Caches initialized")
 }
 
 func (db *DB) initCountryNameCache() {
@@ -218,7 +219,7 @@ func (db *DB) initCountryNameCache() {
 func (db *DB) Close() {
 	ifPrintln(8, "DB Close called")
 	if db.initialized {
-		ifPrintln(5, "Closing statement and connection.")
+		ifPrintln(4, "Closing statement and connection.")
 		db.dbh.Close()
 		db.stmtTorQueries.Close()
 	}
@@ -230,7 +231,7 @@ func (db *DB) Close() {
 // Executes an arbitrary SQL query which return two columns and returns a map
 // where the first column is the key and second the value
 func (db *DB) SQLQueryKeyValue(query string) map[string]string {
-	ifPrintln(6, "SQLQueryKeyValue("+query+"): ")
+	ifPrintln(4, "SQLQueryKeyValue("+db.escapePercentSign(query)+"): ")
 	rows, err := db.dbh.Query(query)
 	if err != nil {
 		panic("func SQLQueryKeyValue: " + err.Error())
@@ -255,52 +256,9 @@ func (db *DB) SQLQueryKeyValue(query string) map[string]string {
 		}
 		resultMap[key] = val
 	}
-	ifPrintln(6, "func SQLQueryKeyValue RETURN a map (not expanded)")
+	ifPrintln(4, "func SQLQueryKeyValue RETURN a map (not expanded)")
 	return resultMap
 }
-
-/* Implement in TYPEOfMaps
-func (db *DB) SQLQuerySliceOfMaps(query string) [](map[string]string) {
-	rows, err := db.dbh.Query(query)
-	if err != nil {
-		panic("func SQLQuerySliceOfMaps: " + err.Error())
-	}
-
-	// Figure out how many columns are in the response
-	columns, err := rows.Columns()
-	if err != nil {
-		panic("func SQLQuerySliceOfMaps: " + err.Error()) // TODO
-	}
-	ifPrintln(6, fmt.Sprintf("Number of columns returned: %d\n", len(columns)))
-
-	// Allocate row buffer for each column of type sql.RawBytes
-	// Data from rows.scan will be stored there
-	rowBuffer := make([]sql.RawBytes, len(columns))
-
-	// Allocate column number of pointers to point to each of the buffers from above
-	// This is what we'll pass to rows.scan()
-	rowBufferPtrs := make([]interface{}, len(rowBuffer))
-	for i := range rowBuffer {
-		rowBufferPtrs[i] = &rowBuffer[i]
-	}
-
-	var result_row map[string]string
-	result_slice := make([](map[string]string), 0)
-
-	for rows.Next() {
-		err = rows.Scan(rowBufferPtrs...)
-		if err != nil {
-			panic("func SQLQuerySliceOfMaps: " + err.Error())
-		}
-		result_row = make(map[string]string)
-		for i := 0; i < len(columns); i++ {
-			result_row[columns[i]] = string(rowBuffer[i])
-		}
-		result_slice = append(result_slice, result_row)
-	}
-	return result_slice
-}
-*/
 
 // Returs the query as a map or slice of maps, depending on the TYPE argument
 // The key for the outer map is the first element in the SELECT query
@@ -311,7 +269,7 @@ func (db *DB) SQLQuerySliceOfMaps(query string) [](map[string]string) {
 //		mapOfMapOfMaps: map[string](map[string](map[string]string))
 //		sliceOfSlice
 func (db *DB) SQLQueryTYPEOfMaps(TYPE string, query string) interface{} {
-	ifPrintln(4, "func SQLQueryTYPEOfMaps: ("+TYPE+"): "+query)
+	ifPrintln(4, "func SQLQueryTYPEOfMaps: ("+TYPE+"): "+db.escapePercentSign(query))
 	if TYPE != "sliceOfMaps" && TYPE != "mapOfMaps" && TYPE != "mapOfMapOfMaps" && TYPE != "sliceOfSlice" {
 		panic("SQLQueryTYPEOfMaps: Supplied TYPE='" + TYPE + "' TYPE can be only one of the following: sliceOfMaps, mapOfMapOfMaps, mapOfMaps, sliceOfSlice")
 	}
@@ -382,6 +340,7 @@ func (db *DB) SQLQueryTYPEOfMaps(TYPE string, query string) interface{} {
 
 // Generic function which gets the ID column from one of the caches/indexes by its value
 func (db *DB) dbGetKeyByValue(valueType string, value string) string {
+	ifPrintln(6, "func dbGetKeyByValue("+valueType+"): "+value)
 	var err error
 	var row *sql.Rows
 
@@ -447,6 +406,7 @@ func (db *DB) GetNodeIdByFingerprint(fp string) string {
 }*/
 
 func (db *DB) addToTorQueries(version string, relays_published string, bridges_published string) {
+	ifPrintln(4, "func addToTorQueries("+version+", "+relays_published+","+bridges_published+")")
 	_, err := db.stmtTorQueries.Exec(version, relays_published, bridges_published)
 	if err != nil {
 		panic("func addToTorQueries: " + err.Error())
@@ -456,6 +416,7 @@ func (db *DB) addToTorQueries(version string, relays_published string, bridges_p
 }
 
 func ipPort(input string) (string, string) {
+	//ifPrintln(8, "func ipPort("+input+")")
 	var ip, port string
 	if input[0] == '[' { // IPv6
 		ip6AndPort := strings.SplitN(input, "]", 2)
@@ -523,7 +484,7 @@ func (db *DB) addToIP(table string, fpid string, tsIns string, tsRls string, ipA
 }
 
 func (db *DB) updateIfNeededRelayAddressRLS(table string, fpid string, tsRls string, or string) {
-	ifPrintln(2, fmt.Sprintf("func updateIfNeededRelayAddressRLS: %s, %s, %s, %s", table, fpid, tsRls, or))
+	ifPrintln(4, fmt.Sprintf("func updateIfNeededRelayAddressRLS: %s, %s, %s, %s", table, fpid, tsRls, or))
 	ip, port := ipPort(or)
 	var rec (map[string]string)
 	var updStmt *sql.Stmt
@@ -565,9 +526,9 @@ func (db *DB) updateIfNeededRelayAddressRLS(table string, fpid string, tsRls str
 
 	if rec["port"] == port {
 		if rec["RecordLastSeen"] == tsRls {
-			ifPrintln(2, "COMPLETE MATCH: no need to update RLS for: "+tsRls+"; "+rec["RecordLastSeen"]+"; ")
+			ifPrintln(5, "COMPLETE MATCH: no need to update RLS for: "+tsRls+"; "+rec["RecordLastSeen"]+"; ")
 		} else {
-			ifPrintln(2, fmt.Sprintf("Updating RLS in %s. Rec id: %s. New time: %s", table, rec["ID"], tsRls))
+			ifPrintln(4, fmt.Sprintf("Updating RLS in %s. Rec id: %s. New time: %s", table, rec["ID"], tsRls))
 			_, err := updStmt.Exec(tsRls, rec["ID"])
 			if err != nil {
 				panic("func updateTorRelayRLS: " + err.Error())
@@ -596,7 +557,7 @@ func (db *DB) updateTorRelayRLS(id string, newTS string) {
 // Add key/value variations
 
 func (db *DB) addKeyValue_CC(cc string, country_name string) string {
-	ifPrintln(6, "func addKeyValue_CC("+cc+", "+country_name+"): ")
+	ifPrintln(4, "func addKeyValue_CC("+cc+", "+country_name+"): ")
 	if len(cc) == 0 || len(country_name) == 0 {
 		return "" // Prevent this from causing a DB error
 	}
@@ -604,7 +565,7 @@ func (db *DB) addKeyValue_CC(cc string, country_name string) string {
 }
 
 func (db *DB) addKeyValue(valueType string, value string) string {
-	ifPrintln(6, "func addKeyValue("+valueType+", "+value+"): ")
+	ifPrintln(4, "func addKeyValue("+valueType+", "+value+"): ")
 	return db.addKeyValue_real(valueType, value, "")
 }
 
@@ -655,10 +616,16 @@ func (db *DB) addKeyValue_real(valueType string, value string, id string) string
 	if err != nil {
 		errDetail, _ := err.(*mysql.MySQLError)
 		ifPrintln(6, "Add to "+valueType+": SQL insert error")
-		if errDetail.Number == 1062 { // 1062 means duplicate fingerprint (normal after second run)
+		switch errDetail.Number {
+		case 1062: // Error 1062 means duplicate fingerprint (normal after second run)
 			ifPrintln(6, "DETECTED A DUPLICATE (MySQL code 1062)")
-		} else {
+			break
+		case 1406: // Error 1406: Data too long for column 'xxx' at row 1
+			ifPrintln(-2, "DB field truncated (MySQL code 1406)")
+			break
+		default:
 			panic("func addKeyValue_real: (" + valueType + ") " + value + ":\n" + err.Error())
+			break
 		}
 
 		// Note before this function is called fp2id would have checked the cache
@@ -769,6 +736,16 @@ func (db *DB) addslashes(str string) string {
 	escape_chars := []string{"\\", "\"", "'", "\x00"}
 	for _, c := range escape_chars {
 		str = strings.Replace(str, c, "\\"+c, -1)
+	}
+	return str
+}
+
+func (db *DB) escapePercentSign(str string) string {
+	// Backslash "escape" single quote, double quote, backslash, NULL
+	// Keep "\" as the first in the escape sequence
+	escape_chars := []string{"%"}
+	for _, c := range escape_chars {
+		str = strings.Replace(str, c, "%"+c, -1)
 	}
 	return str
 }
