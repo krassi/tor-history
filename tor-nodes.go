@@ -9,6 +9,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -108,6 +109,7 @@ var g_db *DB
 var g_consensusDLTS string
 
 var f_inputFileName, f_consensusBackupFileName *string
+var f_consensusBackupGZip *bool
 var f_configFileName *string
 var f_nodeFilter *string
 var f_nodeInfo *bool
@@ -140,7 +142,6 @@ func getConsensusDLTimestamp() string { // cmdlineTS string
 	if !*f_extractConsensusDTfromFilename && len(*f_consensusDownloadTime) == 0 {
 		ifPrintln(-2, "consensusDownloadTime: using system time")
 		t = time.Now()
-		fmt.Println("System time:")
 	} else {
 		ifPrintln(-2, "consensusDownloadTime: processing command line arguments")
 		// Consensus download time override
@@ -209,9 +210,6 @@ func matchTimestampToFormats(ts_matches []string, formats []string) *time.Time {
 }
 
 func initialize() {
-	// Parse command line arguments first, to find the config file path
-	parseCmdlnArguments()
-
 	// Read config file if one specified
 	parseConfigFile(f_configFileName, &g_config)
 
@@ -238,6 +236,9 @@ func cleanup() {
 }
 
 func readConsensusDataFromFile(fn string) *json.Decoder {
+	ifPrintln(1, "readConsensusDataFromFile("+fn+"): ")
+	defer ifPrintln(1, "readConsensusDataFromFile complete.")
+
 	consensusDataFile, err := os.Open(fn)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: opening Consensus data file (%s). ", err.Error())
@@ -247,6 +248,9 @@ func readConsensusDataFromFile(fn string) *json.Decoder {
 }
 
 func main() {
+	// Parse command line arguments first, to find the config file path and if we are using database backend
+	parseCmdlnArguments()
+
 	initialize()
 	defer cleanup()
 
@@ -551,9 +555,10 @@ NeedleLoop:
 
 func parseCmdlnArguments() {
 	//ifPrintln cannot be use before arguments are processed
-	f_inputFileName = flag.String("input-data-file", "details.json", "Use input file instead of downloading from the consensus")
+	f_inputFileName = flag.String("input-data-file", "", "Use input file instead of downloading from the consensus")
 	f_configFileName = flag.String("config-file-name", "config.yml", "Full path of YAML config file")
-	f_consensusBackupFileName = flag.String("consensus-backup-file", "", "Make a backup of the consensus as downloaded at the supplied destination path/prefix")
+	f_consensusBackupFileName = flag.String("consensus-backup-file", "", "Make a backup of the consensus as downloaded at the supplied destination path/prefix. Timestamp is automatically appended.")
+	f_consensusBackupGZip = flag.Bool("consensus-backup-gzip", false, "GZip the backup file")
 	f_nodeFilter = flag.String("node-flag", "", "Node flag filter: BadExit, Exit, Fast, Guard, HSDir, Running, Stable, StaleDesc, V2Dir and Valid")
 	f_nodeInfo = flag.Bool("node-info", true, "Generic node information (on by default)")
 	f_expandIPs = flag.Bool("expand-ips", false, "Forces one per line expansion of the IPs in the answer section")
@@ -601,7 +606,8 @@ func parseNodeFilters(f_nodeFilter *string) []string {
 }
 
 func downloadConsensus(url string) *json.Decoder {
-	ifPrintln(3, "Downloading Consensus details from: "+url)
+	ifPrintln(2, "Downloading Consensus details from: "+url)
+	defer ifPrintln(2, "Consensus download complete.")
 
 	http_session, err := http.Get(url)
 	if err != nil {
@@ -620,15 +626,42 @@ func downloadConsensus(url string) *json.Decoder {
 		if err != nil {
 			log.Fatal(err)
 		}
+		backupConsensus(data)
 
-		t := time.Now().UTC()
-		backup_file, _ := os.Create(*f_consensusBackupFileName + "-" + t.Format("20060102150405"))
-		defer backup_file.Close()
+		return json.NewDecoder(bytes.NewReader(data))
+	}
+}
 
+func backupConsensus(data []byte) {
+	ifPrintln(2, "backupConsensus: ")
+	defer ifPrintln(2, "backupConsensus complete.")
+
+	t := time.Now().UTC()
+	fn := *f_consensusBackupFileName + "-" + t.Format("20060102150405")
+	if *f_consensusBackupGZip {
+		fn += ".gz"
+	}
+
+	ifPrintln(3, "Creating backup file: "+fn)
+	backup_file, _ := os.Create(fn)
+	defer backup_file.Close()
+
+	if *f_consensusBackupGZip {
+		zw := gzip.NewWriter(backup_file)
+		zw.Name = fn
+		zw.ModTime = time.Now()
+		zw.Comment = "tor-nodes"
+
+		_, err := zw.Write(data)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		if err := zw.Close(); err != nil {
+			log.Fatal(err)
+		}
+	} else {
 		// Write to backup
 		backup_file.Write(data)
-
-		// Write to parser
-		return json.NewDecoder(bytes.NewReader(data))
 	}
 }
