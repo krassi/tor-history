@@ -17,6 +17,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -114,6 +115,8 @@ var f_expandIPs, f_expandIPsAndFlags *bool
 var f_debug *bool
 var f_verbosity *uint
 var f_consensusDownloadTime, f_fmtConsensusDownloadTime *string
+var f_extractConsensusDTfromFilename *bool
+var f_extractConsensusDTfromFilenameRegEx *string
 
 func ifPrintln(level int, msg string) {
 	// Prints an error message if verbosity level is less than f_verbosity threshold
@@ -126,39 +129,83 @@ func ifPrintln(level int, msg string) {
 	}
 }
 
-func getConsensusDLTimestamp(cmdlineTS string) string {
+func getConsensusDLTimestamp() string { // cmdlineTS string
+	ifPrintln(6, "getConsensusDLTimestamp: ")
+	if *f_extractConsensusDTfromFilename && len(*f_consensusDownloadTime) > 0 {
+		log.Fatalln("Incompatible flags extract-consensus-download-time-from-filename and consensus-download-time. Remove one of them.")
+	}
+
 	var t time.Time
-	// Consensus download time override
-	if len(cmdlineTS) > 0 {
-		ifPrintln(-2, "consensusDownloadTime: processing command line arguments")
-		var formats []string
-		// Time format override
-		if len(*f_fmtConsensusDownloadTime) > 0 {
-			ifPrintln(4, "CUSTOM FORMAT: "+*f_fmtConsensusDownloadTime)
-			formats = append(formats, *f_fmtConsensusDownloadTime)
-		} else {
-			formats = []string{"2006-01-02_15:04:05", "2006-01-02_15:04", "20060102150405",
-				"200601021504", time.RFC3339, time.RFC3339Nano, time.ANSIC, time.UnixDate,
-				time.RFC822, time.RFC822Z, time.RFC850, time.RFC1123, time.RFC1123Z, time.RubyDate}
-		}
-		var err error
-		for _, f := range formats {
-			ifPrintln(6, "Attempting format: "+f)
-			t, err = time.Parse(f, cmdlineTS)
-			if err == nil {
-				break
-			}
-		}
-	} else {
+
+	if !*f_extractConsensusDTfromFilename && len(*f_consensusDownloadTime) == 0 {
 		ifPrintln(-2, "consensusDownloadTime: using system time")
 		t = time.Now()
 		fmt.Println("System time:")
-	}
+	} else {
+		ifPrintln(-2, "consensusDownloadTime: processing command line arguments")
+		// Consensus download time override
+		var ts_matches []string
+		if len(*f_consensusDownloadTime) > 0 {
+			ts_matches[0] = *f_consensusDownloadTime
+		}
+		if *f_extractConsensusDTfromFilename {
+			// If RegEx supplied - try it
+			if len(*f_extractConsensusDTfromFilenameRegEx) > 0 { // If RegEx is provided use it to extract the date
+				re := regexp.MustCompile(*f_extractConsensusDTfromFilenameRegEx)
+				ts_matches = re.FindAllString(*f_inputFileName, -1)
+			} else { //No regex, try the old way
+				re := regexp.MustCompile(`[0-9][0-9-_:]+[0-9]`)
+				ts_matches = re.FindAllString(*f_inputFileName, -1)
+			}
+			ifPrintln(6, fmt.Sprintf("Extracted timestamp from filename: \n%v", ts_matches))
+		}
+		formats := getTimeFormats()
+		t_res := matchTimestampToFormats(ts_matches, formats)
+		if t_res == nil {
+			log.Fatalln("Unable to parse timestamp.", ts_matches)
+		}
+		t = *t_res
+	} // else
+
 	str := fmt.Sprintf("%04d%02d%02d%02d%02d%02d",
 		t.Year(), t.Month(), t.Day(),
 		t.Hour(), t.Minute(), t.Second())
 	ifPrintln(2, "consensusDownloadTime: returning timestamp: "+str)
 	return str
+}
+
+func getTimeFormats() []string {
+	var formats []string
+	// Time format override
+	if len(*f_fmtConsensusDownloadTime) > 0 {
+		ifPrintln(4, "Custom format supplied: "+*f_fmtConsensusDownloadTime)
+		formats = append(formats, *f_fmtConsensusDownloadTime)
+	} else {
+		formats = []string{"2006-01-02_15:04:05", "2006-01-02_15:04", "20060102150405", "200601021504",
+			"2006-01-02-15-04-05", "2006-01-02-15-04", time.RFC3339, time.RFC3339Nano, time.ANSIC, time.UnixDate,
+			time.RFC822, time.RFC822Z, time.RFC850, time.RFC1123, time.RFC1123Z, time.RubyDate}
+	}
+	return formats
+}
+
+func matchTimestampToFormats(ts_matches []string, formats []string) *time.Time {
+	// Given an array of potential timestamps and possible time formats it returns
+	// a match for the first TS that matches a time format
+	var err error
+	var t time.Time
+
+	for _, ts := range ts_matches {
+		ifPrintln(6, "Matching against: "+ts)
+		for _, f := range formats {
+			ifPrintln(6, "Attempting format: "+f)
+			t, err = time.Parse(f, ts)
+			if err == nil {
+				ifPrintln(6, "Match found! ^^^")
+				return &t
+			}
+		}
+	}
+	return nil
 }
 
 func initialize() {
@@ -169,8 +216,8 @@ func initialize() {
 	parseConfigFile(f_configFileName, &g_config)
 
 	// Acquire the Consensus download time. If importing from a file, it is
-	// taken from the command line. If downloaded it's now()
-	g_consensusDLTS = getConsensusDLTimestamp(*f_consensusDownloadTime)
+	// taken from the command line or the filename itself. If downloaded it's now()
+	g_consensusDLTS = getConsensusDLTimestamp()
 
 	// Open DB connection
 	g_db = NewDBFromConfig(g_config)
@@ -503,6 +550,7 @@ NeedleLoop:
 }
 
 func parseCmdlnArguments() {
+	//ifPrintln cannot be use before arguments are processed
 	f_inputFileName = flag.String("input-data-file", "details.json", "Use input file instead of downloading from the consensus")
 	f_configFileName = flag.String("config-file-name", "config.yml", "Full path of YAML config file")
 	f_consensusBackupFileName = flag.String("consensus-backup-file", "", "Make a backup of the consensus as downloaded at the supplied destination path/prefix")
@@ -514,8 +562,14 @@ func parseCmdlnArguments() {
 	f_verbosity = flag.Uint("verbosity", 3, "Verbosity level if negative print to Stderr")
 	f_consensusDownloadTime = flag.String("consensus-download-time", "", "The time the consensus was downloaded. Useful when importing data downloaded in the past")
 	f_fmtConsensusDownloadTime = flag.String("consensus-download-time-format", "", "The time the consensus was downloaded. Useful when importing data downloaded in the past")
+	f_extractConsensusDTfromFilename = flag.Bool("extract-consensus-download-time-from-filename", false, "When importing from a file, it attempts to read the consensus download date from the filename")
+	f_extractConsensusDTfromFilenameRegEx = flag.String("filename-regex", "", "When importing from a file and attempting to extract the timestamp from its name, this regex will be used")
 
 	flag.Parse()
+
+	if len(*f_extractConsensusDTfromFilenameRegEx) > 0 { // If regex for file extraction is specified then force file extraction bit
+		*f_extractConsensusDTfromFilename = true
+	}
 
 	// Disable f_expandIPs if f_expandIPsAndFlags is on
 	if *f_expandIPsAndFlags {
