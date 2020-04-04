@@ -10,6 +10,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/go-sql-driver/mysql"
@@ -169,6 +170,9 @@ func NewDBFromConfig(cfg TorHistoryConfig) *DB {
 }
 
 func (db *DB) initCaches() {
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database" + "initCaches" + ".")
+	}
 	// ###### Refactor
 	ifPrintln(2, "initCaches: Initialiazing memory caches from database")
 	db.fp2idMap = db.SQLQueryKeyValue("SELECT ID, Fingerprint FROM NodeFingerprints;")
@@ -212,6 +216,9 @@ func (db *DB) initCaches() {
 }
 
 func (db *DB) initCountryNameCache() {
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database" + "initCountryNameCache" + ".")
+	}
 	ifPrintln(2, "initCountryNameCache: Initialiazing memocountry codes cache from database")
 	db.cc2cyNameMap = db.SQLQueryKeyValue("SELECT LOWER(CC) CC, CountryName FROM Countries;") // Uses LOWER() just in case the database was initialized with capital CC
 }
@@ -231,6 +238,9 @@ func (db *DB) Close() {
 // Executes an arbitrary SQL query which return two columns and returns a map
 // where the first column is the key and second the value
 func (db *DB) SQLQueryKeyValue(query string) map[string]string {
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database" + "SQLQueryKeyValue" + ".")
+	}
 	ifPrintln(4, "SQLQueryKeyValue("+db.escapePercentSign(query)+"): ")
 	rows, err := db.dbh.Query(query)
 	if err != nil {
@@ -270,6 +280,9 @@ func (db *DB) SQLQueryKeyValue(query string) map[string]string {
 //		sliceOfSlice
 func (db *DB) SQLQueryTYPEOfMaps(TYPE string, query string) interface{} {
 	ifPrintln(4, "func SQLQueryTYPEOfMaps: ("+TYPE+"): "+db.escapePercentSign(query))
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database.")
+	}
 	if TYPE != "sliceOfMaps" && TYPE != "mapOfMaps" && TYPE != "mapOfMapOfMaps" && TYPE != "sliceOfSlice" {
 		panic("SQLQueryTYPEOfMaps: Supplied TYPE='" + TYPE + "' TYPE can be only one of the following: sliceOfMaps, mapOfMapOfMaps, mapOfMaps, sliceOfSlice")
 	}
@@ -341,6 +354,9 @@ func (db *DB) SQLQueryTYPEOfMaps(TYPE string, query string) interface{} {
 // Generic function which gets the ID column from one of the caches/indexes by its value
 func (db *DB) dbGetKeyByValue(valueType string, value string) string {
 	ifPrintln(6, "func dbGetKeyByValue("+valueType+"): "+value)
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database.")
+	}
 	var err error
 	var row *sql.Rows
 
@@ -407,6 +423,9 @@ func (db *DB) GetNodeIdByFingerprint(fp string) string {
 
 func (db *DB) addToTorQueries(version string, relays_published string, bridges_published string) {
 	ifPrintln(4, "func addToTorQueries("+version+", "+relays_published+","+bridges_published+")")
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database.")
+	}
 	_, err := db.stmtTorQueries.Exec(version, relays_published, bridges_published)
 	if err != nil {
 		panic("func addToTorQueries: " + err.Error())
@@ -435,37 +454,46 @@ func ipPort(input string) (string, string) {
 }
 
 func (db *DB) addToIP(table string, fpid string, tsIns string, tsRls string, ipAndPort string) {
-	// Check if it is IPv4 or IPv6
-	fmt.Println("func addToIP: " + ipAndPort)
+	ifPrintln(6, "func addToIP(type="+table+"): "+ipAndPort)
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database.")
+	}
+	defer ifPrintln(6, "addToIP: END")
+
 	if len(ipAndPort) == 0 {
-		fmt.Println("Empty IP/port")
+		ifPrintln(6, "Empty IP/port")
 		return
 	}
 
+	// Check if it is IPv4 or IPv6
 	var stmt *sql.Stmt
 	if ipAndPort[0] == '[' { // IPv6
 		switch table {
 		case "Or":
 			stmt = db.stmtAddOrV6
 			break
-		case "Exit":
+		case "Ex":
 			stmt = db.stmtAddExitV6
 			break
-		case "Dir":
+		case "Di":
 			stmt = db.stmtAddDirV6
 			break
+		default:
+			log.Fatal("Reached unexpected case (" + table + ") in IPv6 switch for (" + ipAndPort + ") in addToIP().")
 		}
 	} else {
 		switch table {
 		case "Or":
 			stmt = db.stmtAddOrV4
 			break
-		case "Exit":
+		case "Ex":
 			stmt = db.stmtAddExitV4
 			break
-		case "Dir":
+		case "Di":
 			stmt = db.stmtAddDirV4
 			break
+		default:
+			log.Fatal("Reached unexpected case (" + table + ") in IPv4 switch for (" + ipAndPort + ") in addToIP().")
 		}
 	}
 	var err error
@@ -479,12 +507,13 @@ func (db *DB) addToIP(table string, fpid string, tsIns string, tsRls string, ipA
 	if err != nil {
 		panic("func addToIPv(" + table + "): " + err.Error())
 	}
-
-	fmt.Println("addToIP: END")
 }
 
 func (db *DB) updateIfNeededRelayAddressRLS(table string, fpid string, tsRls string, or string) {
 	ifPrintln(4, fmt.Sprintf("func updateIfNeededRelayAddressRLS: %s, %s, %s, %s", table, fpid, tsRls, or))
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database.")
+	}
 	ip, port := ipPort(or)
 	var rec (map[string]string)
 	var updStmt *sql.Stmt
@@ -535,7 +564,8 @@ func (db *DB) updateIfNeededRelayAddressRLS(table string, fpid string, tsRls str
 			}
 		}
 	} else {
-		fmt.Println("NO MATCH: Need to insert in DB and cache")
+		//##### Verbosity to 4
+		ifPrintln(1, fmt.Sprintf("%s new IP for %s: Inserting %s in DB and cache", fpid, table, or))
 		// Inserting into DB; there is no need to insert into the cache as it is guaranteed we are not
 		// going to go back to that fingerprint in this program run
 
@@ -546,6 +576,9 @@ func (db *DB) updateIfNeededRelayAddressRLS(table string, fpid string, tsRls str
 
 func (db *DB) updateTorRelayRLS(id string, newTS string) {
 	ifPrintln(4, "updateTorRelayRLS: id: "+id+"; new timestamp: "+newTS)
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database.")
+	}
 	_, err := db.stmtUpdTorRelaysRLS.Exec(newTS, id)
 	if err != nil {
 		panic("func updateTorRelayRLS: " + err.Error())
@@ -558,6 +591,9 @@ func (db *DB) updateTorRelayRLS(id string, newTS string) {
 
 func (db *DB) addKeyValue_CC(cc string, country_name string) string {
 	ifPrintln(4, "func addKeyValue_CC("+cc+", "+country_name+"): ")
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database.")
+	}
 	if len(cc) == 0 || len(country_name) == 0 {
 		return "" // Prevent this from causing a DB error
 	}
@@ -566,11 +602,17 @@ func (db *DB) addKeyValue_CC(cc string, country_name string) string {
 
 func (db *DB) addKeyValue(valueType string, value string) string {
 	ifPrintln(4, "func addKeyValue("+valueType+", "+value+"): ")
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database.")
+	}
 	return db.addKeyValue_real(valueType, value, "")
 }
 
 func (db *DB) addKeyValue_real(valueType string, value string, id string) string {
 	ifPrintln(4, "func addKeyValue_real("+valueType+", "+value+", "+id+"): ")
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database.")
+	}
 	var lastID string
 	var err error
 	var res sql.Result
@@ -615,13 +657,14 @@ func (db *DB) addKeyValue_real(valueType string, value string, id string) string
 
 	if err != nil {
 		errDetail, _ := err.(*mysql.MySQLError)
-		ifPrintln(6, "Add to "+valueType+": SQL insert error")
+		ifPrintln(4, "Add to "+valueType+": SQL insert error")
 		switch errDetail.Number {
 		case 1062: // Error 1062 means duplicate fingerprint (normal after second run)
 			ifPrintln(6, "DETECTED A DUPLICATE (MySQL code 1062)")
 			break
 		case 1406: // Error 1406: Data too long for column 'xxx' at row 1
-			ifPrintln(-2, "DB field truncated (MySQL code 1406)")
+			//ifPrintln(-2, "DB field truncated (MySQL code 1406)")
+			panic("func addKeyValue_real: (" + valueType + ") " + value + ": => DB field truncated (MySQL code 1406)\n" + err.Error())
 			break
 		default:
 			panic("func addKeyValue_real: (" + valueType + ") " + value + ":\n" + err.Error())
@@ -652,6 +695,10 @@ func (db *DB) addKeyValue_real(valueType string, value string, id string) string
 // ID lookup functions
 
 func (db *DB) cc2countryName(cc string) string {
+	ifPrintln(4, "func cc2countryName("+cc+")")
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database.")
+	}
 	// If fingerprint is in the cache already, return it.
 	if value, ok := db.cc2cyNameMap[cc]; ok {
 		ifPrintln(4, fmt.Sprintf("Cache hit for cc %s, returning %d.", cc, value))
@@ -665,6 +712,9 @@ func (db *DB) cc2countryName(cc string) string {
 // If not in the cache, update the cache, enter in the DB and return the DB id
 func (db *DB) value2id(valueType string, value string) string {
 	ifPrintln(4, "func value2id("+valueType+", "+value+")")
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database.")
+	}
 	var ok bool
 	var id string
 	var cache *map[string]string
@@ -716,7 +766,7 @@ func (db *DB) value2id(valueType string, value string) string {
 
 func (db *DB) normalizeCountryID(cid string, cname string) string {
 	// This is a VERY SPECIAL case
-	// We do not need to lookup the conutry code as we already have it from
+	// We do not need to lookup the country code as we already have it from
 	// the Consensus and we just need to ensure it's lower case
 	// However, we also need to ensure the country code exists in the Countries
 	// table, and if not add it
