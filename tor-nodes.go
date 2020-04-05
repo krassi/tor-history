@@ -90,7 +90,10 @@ type TorDetails struct {
 }
 
 type TorHistoryConfig struct {
+	Verbosity uint `yaml:"verbosity"`
+	//CfgFilename string
 	DBServer struct {
+		Enabled  bool   //`yaml:"enabled"`
 		Port     string `yaml:"port"`
 		Host     string `yaml:"host"`
 		DBName   string `yaml:"database"`
@@ -98,31 +101,33 @@ type TorHistoryConfig struct {
 		Password string `yaml:"password"`
 	} `yaml:"dbserver"`
 	Tor struct {
-		URL string `yaml:"url"`
+		ConsensusURL     string `yaml:"url"`      // Consensus URL
+		Filename         string `yaml:"Filename"` // Input filename
+		ConsensusDLT     string
+		ConsensusDLT_fmt string
+
+		ExtractDLTfromFilename       bool
+		ExtractDLTfromFilename_regex string
 	} `yaml:"consensus"`
+	Backup struct {
+		Filename string `yaml:"filename"`
+		Gzip     bool   `yaml:"gzip"`
+	} `yaml:"backup"`
 }
 
 var g_config TorHistoryConfig
-
 var g_consensus_details_URL = "https://onionoo.torproject.org/details"
 var g_db *DB
+
 var g_consensusDLTS string
 
-var f_inputFileName, f_consensusBackupFileName *string
-var f_consensusBackupGZip *bool
-var f_configFileName *string
 var f_nodeFilter *string
 var f_nodeInfo *bool
 var f_expandIPs, f_expandIPsAndFlags *bool
-var f_debug *bool
-var f_verbosity *uint
-var f_consensusDownloadTime, f_fmtConsensusDownloadTime *string
-var f_extractConsensusDTfromFilename *bool
-var f_extractConsensusDTfromFilenameRegEx *string
 
 func ifPrintln(level int, msg string) {
-	// Prints an error message if verbosity level is less than f_verbosity threshold
-	if uint(math.Abs(float64(level))) < *f_verbosity {
+	// Prints an error message if verbosity level is less than g_config.Verbosity threshold
+	if uint(math.Abs(float64(level))) <= g_config.Verbosity {
 		if level < 0 {
 			fmt.Fprintf(os.Stderr, msg+"\n")
 		} else {
@@ -133,30 +138,31 @@ func ifPrintln(level int, msg string) {
 
 func getConsensusDLTimestamp() string { // cmdlineTS string
 	ifPrintln(6, "getConsensusDLTimestamp: ")
-	if *f_extractConsensusDTfromFilename && len(*f_consensusDownloadTime) > 0 {
+	if g_config.Tor.ExtractDLTfromFilename && len(g_config.Tor.ConsensusDLT) > 0 {
 		log.Fatalln("Incompatible flags extract-consensus-download-time-from-filename and consensus-download-time. Remove one of them.")
 	}
 
 	var t time.Time
 
-	if !*f_extractConsensusDTfromFilename && len(*f_consensusDownloadTime) == 0 {
-		ifPrintln(-2, "consensusDownloadTime: using system time")
+	if !g_config.Tor.ExtractDLTfromFilename && len(g_config.Tor.ConsensusDLT) == 0 {
+		ifPrintln(-3, "consensusDownloadTime: using system time")
 		t = time.Now()
 	} else {
-		ifPrintln(-2, "consensusDownloadTime: processing command line arguments")
+		ifPrintln(-3, "consensusDownloadTime: not using system time, processing command line arguments")
 		// Consensus download time override
 		var ts_matches []string
-		if len(*f_consensusDownloadTime) > 0 {
-			ts_matches[0] = *f_consensusDownloadTime
+		if len(g_config.Tor.ConsensusDLT) > 0 {
+			ts_matches = make([]string, 1)
+			ts_matches[0] = g_config.Tor.ConsensusDLT
 		}
-		if *f_extractConsensusDTfromFilename {
+		if g_config.Tor.ExtractDLTfromFilename {
 			// If RegEx supplied - try it
-			if len(*f_extractConsensusDTfromFilenameRegEx) > 0 { // If RegEx is provided use it to extract the date
-				re := regexp.MustCompile(*f_extractConsensusDTfromFilenameRegEx)
-				ts_matches = re.FindAllString(*f_inputFileName, -1)
+			if len(g_config.Tor.ExtractDLTfromFilename_regex) > 0 { // If RegEx is provided use it to extract the date
+				re := regexp.MustCompile(g_config.Tor.ExtractDLTfromFilename_regex)
+				ts_matches = re.FindAllString(g_config.Tor.Filename, -1)
 			} else { //No regex, try the old way
 				re := regexp.MustCompile(`[0-9][0-9-_:]+[0-9]`)
-				ts_matches = re.FindAllString(*f_inputFileName, -1)
+				ts_matches = re.FindAllString(g_config.Tor.Filename, -1)
 			}
 			ifPrintln(6, fmt.Sprintf("Extracted timestamp from filename: \n%v", ts_matches))
 		}
@@ -171,16 +177,16 @@ func getConsensusDLTimestamp() string { // cmdlineTS string
 	str := fmt.Sprintf("%04d%02d%02d%02d%02d%02d",
 		t.Year(), t.Month(), t.Day(),
 		t.Hour(), t.Minute(), t.Second())
-	ifPrintln(2, "consensusDownloadTime: returning timestamp: "+str)
+	ifPrintln(3, "consensusDownloadTime: returning timestamp: "+str)
 	return str
 }
 
 func getTimeFormats() []string {
 	var formats []string
 	// Time format override
-	if len(*f_fmtConsensusDownloadTime) > 0 {
-		ifPrintln(4, "Custom format supplied: "+*f_fmtConsensusDownloadTime)
-		formats = append(formats, *f_fmtConsensusDownloadTime)
+	if len(g_config.Tor.ConsensusDLT_fmt) > 0 {
+		ifPrintln(4, "Custom format supplied: "+g_config.Tor.ConsensusDLT_fmt)
+		formats = append(formats, g_config.Tor.ConsensusDLT_fmt)
 	} else {
 		formats = []string{"2006-01-02_15:04:05", "2006-01-02_15:04", "20060102150405", "200601021504",
 			"2006-01-02-15-04-05", "2006-01-02-15-04", time.RFC3339, time.RFC3339Nano, time.ANSIC, time.UnixDate,
@@ -210,23 +216,30 @@ func matchTimestampToFormats(ts_matches []string, formats []string) *time.Time {
 }
 
 func initialize() {
-	// Read config file if one specified
-	parseConfigFile(f_configFileName, &g_config)
+	ifPrintln(2, "Initializing subsystems and caches...")
+	defer ifPrintln(2, "Subsystems and caches initialized.")
 
 	// Acquire the Consensus download time. If importing from a file, it is
 	// taken from the command line or the filename itself. If downloaded it's now()
 	g_consensusDLTS = getConsensusDLTimestamp()
+	ifPrintln(2, "Consensus DownloadTimestamp (DLTS) check: "+g_consensusDLTS)
 
-	// Open DB connection
-	g_db = NewDBFromConfig(g_config)
+	if g_config.DBServer.Enabled { // Check id DB backend is enabled
+		ifPrintln(2, "Initializing all caches.")
+		defer ifPrintln(2, "All caches initialized.")
 
-	// Initialize DB caches
-	g_db.initCaches()
+		// Open DB connection
+		g_db = NewDBFromConfig(g_config)
 
-	// Initialize CC cache
-	g_db.initCountryNameCache()
+		// Initialize DB caches
+		g_db.initCaches()
 
-	ifPrintln(2, "Caches initialized.")
+		// Initialize CC cache
+		g_db.initCountryNameCache()
+
+		// Initialize the Latest Relay cache - stores the latest relay before certain timestamp
+		g_db.initializeLatestRelayDataCache(&g_db.lrd, g_consensusDLTS)
+	}
 }
 
 func cleanup() {
@@ -235,210 +248,206 @@ func cleanup() {
 	ifPrintln(5, "Completed cleanup()")
 }
 
-func readConsensusDataFromFile(fn string) *json.Decoder {
-	ifPrintln(1, "readConsensusDataFromFile("+fn+"): ")
-	defer ifPrintln(1, "readConsensusDataFromFile complete.")
+func init() {
+	fmt.Println("Initializing...")
+	// Parse command line arguments first, to find the config file path and if we are using database backend
+	parseCmdlnArguments(&g_config)
+}
 
-	consensusDataFile, err := os.Open(fn)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: opening Consensus data file (%s). ", err.Error())
-		log.Fatal(err)
+func logDataImport(tor_response *TorResponse) {
+	ifPrintln(-3, fmt.Sprintf("TOR Version, build revision: %s, %s (Aquisition time: %s)",
+		tor_response.Version, tor_response.Build_revision, g_consensusDLTS))
+	if g_db.initialized {
+		g_db.addToTorQueries(tor_response.Version, tor_response.Relays_published, tor_response.Bridges_published, g_consensusDLTS)
 	}
-	return json.NewDecoder(consensusDataFile)
 }
 
 func main() {
-	// Parse command line arguments first, to find the config file path and if we are using database backend
-	parseCmdlnArguments()
-
 	initialize()
 	defer cleanup()
 
 	// Extract the TOR node filters from the arguments
-	//matchFlags := parseNodeFilters(f_nodeFilter)
+	matchFlags := parseNodeFilters(f_nodeFilter)
 
-	var consensusData *json.Decoder
-	if *f_inputFileName != "" {
-		consensusData = readConsensusDataFromFile(*f_inputFileName)
-	} else {
-		consensusData = downloadConsensus(g_consensus_details_URL)
-	}
+	ifPrintln(1, fmt.Sprintf("Filters requested: %v", matchFlags))
 
+	tor_response := getConsensus()
+	/*consensusData := getConsensus() //consensusData *json.Decoder
 	var tor_response TorResponse
 	err := consensusData.Decode(&tor_response)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "parsing Consensus file: %s", err.Error())
 		log.Fatal(err)
 	}
+	*/
+	logDataImport(&tor_response)
 
-	ifPrintln(-3, fmt.Sprintf("TOR Version, build revision: %s, %s", tor_response.Version, tor_response.Build_revision))
-	g_db.addToTorQueries(tor_response.Version, tor_response.Relays_published, tor_response.Bridges_published)
+	/*
+		if allStringsInSet(&matchFlags, &relay.Flags) {
 
-	// #### Update the SQL query at top whe done here
-	g_db.stmtAddTorRelays, err = g_db.dbh.Prepare("INSERT INTO TorRelays (ID_NodeFingerprints, ID_Countries, ID_Regions, ID_Cities, ID_Platforms, ID_Versions, ID_Contacts, " +
-		"ID_ExitPolicies, ID_ExitPolicySummaries, ID_ExitPolicyV6Summaries, Nickname, Last_changed_address_or_port, First_seen, flags, jsd) " +
-		"VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);")
-	//###### UPDATE this query up
-
-	var lrd map[string](map[string]string) // lrd = latest relay data
-	lrd = g_db.SQLQueryTYPEOfMaps("mapOfMaps",
-		`SELECT Fingerprint, tr.ID id, Nickname, RecordTimeInserted, DATE_FORMAT( RecordLastSeen, "%Y%m%d%H%i%s") as RecordLastSeen, ID_Countries Country, CityName, 
-			PlatformName, VersionName, ContactName, First_seen, Last_changed_address_or_port, ExitPolicy, ExitPolicySummary, ExitPolicyV6Summary , tr.ID_Versions, tr.ID_Contacts, ID_NodeFingerprints
-			FROM TorRelays tr
-			LEFT JOIN NodeFingerprints nf ON tr.ID_NodeFingerprints = nf.ID 
-			LEFT JOIN Cities c ON ID_Cities = c.ID
-			LEFT JOIN Platforms p ON ID_Platforms = p.ID
-			LEFT JOIN Versions v ON ID_Versions = v.ID
-			LEFT JOIN Contacts ct ON ID_Contacts = ct.ID
-			LEFT JOIN ExitPolicies ep ON ID_ExitPolicies = ep.ID
-			LEFT JOIN ExitPolicySummaries eps ON ID_ExitPolicySummaries = eps.ID
-			LEFT JOIN ExitPolicyV6Summaries eps6 ON ID_ExitPolicyV6Summaries = eps6.ID
-			WHERE (ID_NodeFingerprints, RecordLastSeen) IN 
-			(SELECT ID_NodeFingerprints, max(RecordLastSeen) FROM TorRelays GROUP BY ID_NodeFingerprints);`).(map[string](map[string]string))
-	// ### BIG BUG => RecordTimeInserted should be RecordLastSeen ^^^
-	// #####
+			if *f_nodeInfo {
+				fmt.Printf("NODE: %s/%s/%s (%s) => %s\n", relay.Nickname, relay.Fingerprint, fpid, relay.Flags, relay.Exit_addresses)
+			}
+			if *f_expandIPs {
+				for _, i := range relay.Exit_addresses {
+					fmt.Println(i)
+				}
+			}
+			if *f_expandIPsAndFlags {
+				for _, i := range relay.Exit_addresses {
+					fmt.Printf("%s: %s\n", i, relay.Flags)
+				}
+			}
+		}
+	*/
 
 	for _, relay := range tor_response.Relays {
-		ifPrintln(3, "\n== Processing: "+relay.Fingerprint+" ==========================================")
+		ifPrintln(4, "\n== Processing node with fingerprint/nickname: "+relay.Fingerprint+"/"+relay.Nickname+" ===============================")
 		// Check if this is a newer record
-		// Prepare JSON values for comparisson
-		js_exitp, _ := json.Marshal(relay.Exit_policy)
-		js_exitps, _ := json.Marshal(relay.Exit_policy_summary)
-		js_exitps6, _ := json.Marshal(relay.Exit_policy_v6_summary)
 
-		// Clean up excess space left/right
-		relay.Contact = strings.TrimSpace(relay.Contact)
+		if g_db.initialized { // Database backend logic
+			// Clean up excess space left/right
+			relay.Contact = strings.TrimSpace(relay.Contact)
 
-		// The check below needs to be segmented so subtables can be updated independently of TorRelays
-		fp := relay.Fingerprint
-		ifPrintln(6, "Comparing records for fingerprint: "+fp)
-		if recordsMatch(relay, lrd[fp]) { // MATCH - just update RLS
-			ifPrintln(4, "DEBUG: g_consensusDLTS: "+g_consensusDLTS+"; lrd[fp]['RecordLastSeen']: "+lrd[fp]["RecordLastSeen"])
-			if g_consensusDLTS == lrd[fp]["RecordLastSeen"] {
-				fmt.Println("DEBUG: TorRelay records TIMESTAMPS MATCH!!! No DB update need at all")
-			} else {
-				// Update the RecordLastSeen (RLS) timestamp
-				g_db.updateTorRelayRLS(lrd[fp]["id"], g_consensusDLTS)
-				// Note that if Last_changed_address_or_port has not changed, there is no need to explicitly check
-				// if Or, Exit and Dir have changed, however we are goingto update their RLS to
-				// speed up queries against those index tables.
+			// The check below needs to be segmented so subtables can be updated independently of TorRelays
+			fp := relay.Fingerprint
+			ifPrintln(6, "Comparing records for fingerprint: "+fp)
+			if recordsMatch(relay, g_db.lrd[fp]) { // MATCH - deal with node updates in DB
+				ifPrintln(4, "DEBUG: g_consensusDLTS: "+g_consensusDLTS+"; lrd[fp]['RecordLastSeen']: "+g_db.lrd[fp]["RecordLastSeen"])
 
-				//Yes, update needed #########################
-				if len(relay.Or_addresses) > 0 {
-					for _, or := range relay.Or_addresses {
-						//fmt.Println("TorRelay: Or_addresses: " + or)
-						g_db.updateIfNeededRelayAddressRLS("Or", lrd[fp]["ID_NodeFingerprints"], g_consensusDLTS, or)
-					}
+				// Record Last Seen timestamps match?
+				if g_consensusDLTS == g_db.lrd[fp]["RecordLastSeen"] { // Last seen matches - no updates
+					ifPrintln(4, fmt.Sprintf("DEBUG: TorRelay %s records RLS TIMESTAMPS MATCH!!! No DB update need at all", fp))
+				} else { // Update RecordLastSeen of TorRelay and dependent records
+					ifPrintln(4, fmt.Sprintf("DEBUG: TorRelay %s records RLS TIMESTAMPS do not match. Need to check relay addresses", fp))
+
+					// if Or, Exit and Dir have changed, however we are going to update their RLS to
+					// speed up queries against those index tables.
+					updateRelayAddressesIfNeeded(&relay, &g_db.lrd)
+
+					// Update the RecordLastSeen (RLS) timestamp
+					g_db.updateTorRelayRLS(g_db.lrd[fp]["id"], g_consensusDLTS)
 				}
-
-				if len(relay.Exit_addresses) > 0 {
-					for _, ex := range relay.Exit_addresses {
-						//fmt.Println("TorRelay: Exit_addresses" + ex)
-						g_db.updateIfNeededRelayAddressRLS("Ex", lrd[fp]["ID_NodeFingerprints"], g_consensusDLTS, ex)
-
-					}
-				}
-
-				if len(relay.Dir_address) > 0 {
-					//fmt.Println("TorRelay: Dir_addresses" + relay.Dir_address)
-					g_db.updateIfNeededRelayAddressRLS("Di", lrd[fp]["ID_NodeFingerprints"], g_consensusDLTS, relay.Dir_address)
-				}
+				continue
+			} else { // No match/New Record/Add to DB
+				addNewTorRelayToDB(relay)
 			}
-			continue
-		} else { // No match/New Record/Add to DB
-
-			// If newer write to DB
-			fpid := g_db.value2id("fingerprint", relay.Fingerprint)
-			countryid := g_db.normalizeCountryID(relay.Country, relay.Country_name)
-			regionid := g_db.value2id("region", relay.Region_name)
-			cityid := g_db.value2id("city", relay.City_name)
-			platformid := g_db.value2id("platform", relay.Platform)
-			versionid := g_db.value2id("version", relay.Version)
-			contactid := g_db.value2id("contact", relay.Contact)
-			exitp := g_db.value2id("exitp", string(js_exitp))
-			exitps := g_db.value2id("exitps", string(js_exitps))
-			exitps6 := g_db.value2id("exitps6", string(js_exitps6))
-
-			// Store in intermediate variables before compacting the JSON object (before it's stored)
-			nick := relay.Nickname
-			lastChanged := relay.Last_changed_address_or_port
-			firstSeen := relay.First_seen
-
-			// Cleanup the JSON object before marshaling
-			cleanupRelayStruct(&relay)
-
-			// ####
-			jsFlags, _ := json.Marshal(relay.Flags)
-			/*fmt.Println("=====Flags ==========")
-			fmt.Println(relay.Flags)
-			fmt.Println("==== js Flags ===========")
-			fmt.Println(jsFlags)
-			fmt.Println("===============")
-			*/
-			jsRelay, _ := json.Marshal(relay)
-
-			//			fmt.Printf("=== DEBUG ========================================\n"+
-			//				"fpid: %s\ncountryid: %s\nregionid: %s\ncityid: %s\nplatformid: %s\nversionid: %s\ncontactid: %s\nrelay.Nickname: %s\nrelay.Last_changed_address_or_port: %s\nrelay.First_seen: %s\njsFlags: %s\njsRelay: %s\n",
-			//				fpid, countryid, regionid, cityid, platformid, versionid, contactid, nick, lastChanged, firstSeen, jsFlags, jsRelay)
-
-			res, err := g_db.stmtAddTorRelays.Exec(fpid, countryid, regionid, cityid, platformid, versionid, contactid,
-				exitp, exitps, exitps6, nick, lastChanged, firstSeen, jsFlags, jsRelay)
-			if err != nil {
-				fmt.Printf("fpid: %s\ncountryid: %s\nregionid: %s\ncityid: %s\nrelay.Nickname: %s\n"+
-					"relay.Last_changed_address_or_port: %s\nrelay.First_seen: %s\njsFlags: %s\njsRelay: %s\n",
-					fpid, countryid, regionid, cityid, nick, lastChanged, firstSeen, jsFlags, jsRelay)
-				panic("func main: g_db.stmtAddTorRelays.Exec: " + err.Error())
-			}
-
-			lastID_int64, err := res.LastInsertId()
-			lastID := fmt.Sprintf("%d", lastID_int64)
-			fmt.Println("TorRelay LastInsertID: " + lastID)
-
-			fmt.Println("TorRelay: Loop Or_addresses")
-			fmt.Println(relay.Or_addresses)
-			if len(relay.Or_addresses) > 0 {
-				for _, or := range relay.Or_addresses {
-					fmt.Println("TorRelay: Or_addresses" + or)
-					g_db.addToIP("Or", fpid, g_consensusDLTS, g_consensusDLTS, or)
-				}
-			}
-
-			fmt.Println("TorRelay: Loop Exit_addresses")
-			fmt.Println(relay.Exit_addresses)
-			if len(relay.Exit_addresses) > 0 {
-				for _, ex := range relay.Exit_addresses {
-					fmt.Println("TorRelay: Exit_addresses" + ex)
-					g_db.addToIP("Exit", fpid, g_consensusDLTS, g_consensusDLTS, ex)
-				}
-			}
-
-			// relay.Dir_address is a string not an array
-			fmt.Println("TorRelay: Dir_addresses" + relay.Dir_address)
-			if len(relay.Dir_address) > 0 {
-				g_db.addToIP("Dir", fpid, g_consensusDLTS, g_consensusDLTS, relay.Dir_address)
-			}
-
-			/*
-				if allStringsInSet(&matchFlags, &relay.Flags) {
-
-					if *f_nodeInfo {
-						fmt.Printf("NODE: %s/%s/%s (%s) => %s\n", relay.Nickname, relay.Fingerprint, fpid, relay.Flags, relay.Exit_addresses)
-					}
-					if *f_expandIPs {
-						for _, i := range relay.Exit_addresses {
-							fmt.Println(i)
-						}
-					}
-					if *f_expandIPsAndFlags {
-						for _, i := range relay.Exit_addresses {
-							fmt.Printf("%s: %s\n", i, relay.Flags)
-						}
-					}
-				}
-			*/
 		}
 	}
 	ifPrintln(5, "DONE: parsing Consensus file")
+}
+
+func addNewTorRelayToDB(relay TorDetails) {
+	ifPrintln(4, fmt.Sprintf("func addNewTorRelayToDB(%q): ", relay))
+	defer ifPrintln(4, "func addNewTorRelayToDB: RETURN")
+
+	fpid := g_db.value2id("fingerprint", relay.Fingerprint)
+	countryid := g_db.normalizeCountryID(relay.Country, relay.Country_name)
+	regionid := g_db.value2id("region", relay.Region_name)
+	cityid := g_db.value2id("city", relay.City_name)
+	platformid := g_db.value2id("platform", relay.Platform)
+	versionid := g_db.value2id("version", relay.Version)
+	contactid := g_db.value2id("contact", relay.Contact)
+
+	js_exitp, _ := json.Marshal(relay.Exit_policy)
+	exitp := g_db.value2id("exitp", string(js_exitp))
+
+	js_exitps, _ := json.Marshal(relay.Exit_policy_summary)
+	exitps := g_db.value2id("exitps", string(js_exitps))
+
+	js_exitps6, _ := json.Marshal(relay.Exit_policy_v6_summary)
+	exitps6 := g_db.value2id("exitps6", string(js_exitps6))
+
+	// Store in intermediate variables before compacting the JSON object (before it's stored)
+	nick := relay.Nickname
+	lastChanged := relay.Last_changed_address_or_port
+	firstSeen := relay.First_seen
+
+	// Cleanup/compact the JSON object before marshaling
+	cleanupRelayStruct(&relay)
+
+	// ####
+	jsFlags, _ := json.Marshal(relay.Flags)
+	/*fmt.Println("=====Flags ==========")
+	fmt.Println(relay.Flags)
+	fmt.Println("==== js Flags ===========")
+	fmt.Println(jsFlags)
+	fmt.Println("===============")
+	*/
+	jsRelay, _ := json.Marshal(relay)
+
+	ifPrintln(5, fmt.Sprintf("=============== INSERTING RECORD in TorRelays =================\n"+
+		"fpid: %s\ncountryid: %s\nregionid: %s\ncityid: %s\nrelay.Nickname: %s\n"+
+		"relay.Last_changed_address_or_port: %s\nrelay.First_seen: %s\nRecordTimeInserted: %s\nRecordLastSeen: %s\njsFlags: %s\njsRelay: %s\n",
+		fpid, countryid, regionid, cityid, nick, lastChanged, firstSeen, g_consensusDLTS, g_consensusDLTS, jsFlags, jsRelay))
+
+	res, err := g_db.stmtAddTorRelays.Exec(fpid, countryid, regionid, cityid, platformid, versionid, contactid,
+		exitp, exitps, exitps6, nick, lastChanged, firstSeen, g_consensusDLTS, g_consensusDLTS, jsFlags, jsRelay)
+	if err != nil {
+		panic("func main: g_db.stmtAddTorRelays.Exec: " + err.Error())
+	}
+
+	lastID_int64, err := res.LastInsertId()
+	lastID := fmt.Sprintf("%d", lastID_int64)
+	ifPrintln(4, "TorRelay LastInsertID: "+lastID)
+
+	// Add Or, Ex, Di addresses to the corresponding databases
+	addNewRelayAddresses(lastID, fpid, relay.Or_addresses, relay.Exit_addresses, relay.Dir_address)
+}
+
+func addNewRelayAddresses(lastID string, fpid string, Or_addresses []string, Exit_addresses []string, Dir_address string) {
+	ifPrintln(4, fmt.Sprintf("func addNewRelayAddresses(%s,%s,%q,%q,%s): ", lastID, fpid, Or_addresses, Exit_addresses, Dir_address))
+	defer ifPrintln(4, "func addNewRelayAddresses: RETURN")
+
+	ifPrintln(4, fmt.Sprintf("TorRelay: Loop Or_addresses: %v\n", Or_addresses))
+	if len(Or_addresses) > 0 {
+		for _, or := range Or_addresses {
+			ifPrintln(5, "TorRelay: Or_addresses: "+or)
+			g_db.addToIP("Or", fpid, g_consensusDLTS, g_consensusDLTS, or)
+		}
+	}
+
+	ifPrintln(4, fmt.Sprintf("TorRelay: Loop Exit_addresses: %v\n", Exit_addresses))
+	if len(Exit_addresses) > 0 {
+		for _, ex := range Exit_addresses {
+			ifPrintln(5, "TorRelay: Exit_addresses: "+ex)
+			g_db.addToIP("Ex", fpid, g_consensusDLTS, g_consensusDLTS, ex)
+		}
+	}
+
+	// relay.Dir_address is a string not an array
+	ifPrintln(4, "TorRelay: Dir_addresses: "+Dir_address)
+	if len(Dir_address) > 0 {
+		g_db.addToIP("Di", fpid, g_consensusDLTS, g_consensusDLTS, Dir_address)
+	}
+}
+
+func updateRelayAddressesIfNeeded(relay *TorDetails, lrd *map[string](map[string]string)) {
+	ifPrintln(4, "func updateRelayAddressesIfNeeded(BEGIN): ")
+	defer ifPrintln(4, "func updateRelayAddressesIfNeeded: RETURN")
+
+	ifPrintln(6, "Checking OR...")
+	fp := (*relay).Fingerprint
+	if len(relay.Or_addresses) > 0 {
+		for _, or := range relay.Or_addresses {
+			//fmt.Println("TorRelay: Or_addresses: " + or)
+			g_db.updateIfNeededRelayAddressRLS("Or", (*lrd)[fp]["ID_NodeFingerprints"], g_consensusDLTS, or)
+		}
+	}
+
+	ifPrintln(6, "Checking Exit...")
+	if len(relay.Exit_addresses) > 0 {
+		for _, ex := range relay.Exit_addresses {
+			//fmt.Println("TorRelay: Exit_addresses" + ex)
+			g_db.updateIfNeededRelayAddressRLS("Ex", (*lrd)[fp]["ID_NodeFingerprints"], g_consensusDLTS, ex)
+		}
+	}
+
+	ifPrintln(6, "Checking Directory...")
+	if len(relay.Dir_address) > 0 {
+		//fmt.Println("TorRelay: Dir_addresses" + relay.Dir_address)
+		g_db.updateIfNeededRelayAddressRLS("Di", (*lrd)[fp]["ID_NodeFingerprints"], g_consensusDLTS, relay.Dir_address)
+	}
 }
 
 func recordsMatch(relay TorDetails, lrdfp map[string]string) bool {
@@ -454,6 +463,7 @@ func recordsMatch(relay TorDetails, lrdfp map[string]string) bool {
 		relay.Version == lrdfp["VersionName"] &&
 		strings.ToLower(relay.Contact) == strings.ToLower(lrdfp["ContactName"]) &&
 		relay.Last_changed_address_or_port == lrdfp["Last_changed_address_or_port"] &&
+		relay.First_seen == lrdfp["First_seen"] &&
 		string(js_exitp) == lrdfp["ExitPolicy"] &&
 		string(js_exitps) == lrdfp["ExitPolicySummary"] &&
 		string(js_exitps6) == lrdfp["ExitPolicyV6Summary"] {
@@ -462,15 +472,39 @@ func recordsMatch(relay TorDetails, lrdfp map[string]string) bool {
 		return true
 	} else {
 		// #### Just for debugging - delete later
-		ifPrintln(2, "NO MATCH: storing node: "+lrdfp["Fingerprint"])
-		fmt.Printf("Nickname: %s => %s\n", relay.Nickname, lrdfp["Nickname"])
-		fmt.Printf("Country: %s => %s\n", relay.Country, lrdfp["Country"])
-		fmt.Printf("City Name: %s => %s\n", relay.City_name, lrdfp["CityName"])
-		fmt.Printf("Platform: %s => %s\n", relay.Platform, lrdfp["PlatformName"])
-		fmt.Printf("Version: %s => %s (%s)\n", relay.Version, lrdfp["VersionName"], lrdfp["ID_Versions"])
-		fmt.Printf("Contact: %s => %s (%s)\n", relay.Contact, lrdfp["ContactName"], lrdfp["ID_Contacts"])
-		fmt.Printf("LastCHAP: %s => %s\n", relay.Last_changed_address_or_port, lrdfp["Last_changed_address_or_port"])
-		fmt.Printf("FirstSeen: %s => %s\n", relay.First_seen, lrdfp["First_seen"])
+		ifPrintln(0, "NO MATCH: "+lrdfp["Fingerprint"])
+		if g_config.Verbosity >= 6 {
+			fmt.Println("(Current Relay data => LRD Cache data)")
+			fmt.Printf("Fingerprint: %s => %s\n", relay.Fingerprint, lrdfp["Fingerprint"])
+			fmt.Printf("Nickname: %s => %s\n", relay.Nickname, lrdfp["Nickname"])
+
+			if relay.Country != lrdfp["Country"] {
+				fmt.Printf("FAIL Country: %s => %s\n", relay.Country, lrdfp["Country"])
+			}
+			if relay.City_name != lrdfp["CityName"] {
+				fmt.Printf("FAIL City Name: %s => %s\n", relay.City_name, lrdfp["CityName"])
+			}
+			if relay.Platform != lrdfp["PlatformName"] {
+				fmt.Printf("FAIL Platform: %s => %s\n", relay.Platform, lrdfp["PlatformName"])
+			}
+			if relay.Version != lrdfp["VersionName"] {
+				fmt.Printf("FAIL Version: %s => %s (%s)\n", relay.Version, lrdfp["VersionName"], lrdfp["ID_Versions"])
+			}
+			if strings.ToLower(relay.Contact) != strings.ToLower(lrdfp["ContactName"]) {
+				fmt.Printf("FAIL Contact: %s => %s (%s)\n", relay.Contact, lrdfp["ContactName"], lrdfp["ID_Contacts"])
+			}
+			if relay.Last_changed_address_or_port != lrdfp["Last_changed_address_or_port"] {
+				fmt.Printf("FAIL LastCHAP: %s => %s\n", relay.Last_changed_address_or_port, lrdfp["Last_changed_address_or_port"])
+			}
+			if relay.First_seen != lrdfp["First_seen"] {
+				fmt.Printf("FAIL FirstSeen: %s => %s\n", relay.First_seen, lrdfp["First_seen"])
+			}
+			/*
+				string(js_exitp) == lrdfp["ExitPolicy"] &&
+				string(js_exitps) == lrdfp["ExitPolicySummary"] &&
+				string(js_exitps6) == lrdfp["ExitPolicyV6Summary"]
+			*/
+		}
 		return false
 	}
 }
@@ -497,25 +531,39 @@ func cleanupRelayStruct(pr *TorDetails) {
 	// ##### Deal with soon as it is highly volotile: pr.Last_seen = ""
 }
 
-func parseConfigFile(cfgFileName *string, cfg *TorHistoryConfig) {
-	if *cfgFileName == "" {
+func parseConfigFile(cfgFilename string, cfg *TorHistoryConfig) {
+	ifPrintln(1, "Reading configuration file: "+cfgFilename)
+	if cfgFilename == "" {
 		return
 	}
-	f, err := os.Open(*cfgFileName)
+	f, err := os.Open(cfgFilename)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Unable to open configuration file: %s", *cfgFileName)
-		return
+		log.Fatalf("Unable to open configuration file: %s\n", cfgFilename)
 	}
 	defer f.Close()
 
+	cmdLineVerbosity := cfg.Verbosity // Preserve verbosity from the command line (if 0 - not set)
+	// after the config file is read, it will overwrite the global verbosity variable which may have been set by a command line argument
 	decoder := yaml.NewDecoder(f)
 	err = decoder.Decode(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "YAML Decoder error: %s", err)
-		return
+		log.Fatalf("YAML Decoder error: %s\n", err)
 	}
-	ifPrintln(-9, fmt.Sprintf("Host: %s\nPort: %s\nUsername: %s\nPassword: %s\nDB Name: %s",
-		cfg.DBServer.Host, cfg.DBServer.Port, cfg.DBServer.Username, cfg.DBServer.Password, cfg.DBServer.DBName))
+	if cmdLineVerbosity != 0 { // Restore verbosity level set by command line (if it was set)
+		cfg.Verbosity = cmdLineVerbosity
+	}
+	ifPrintln(-8, fmtDBCfg(*cfg, true))
+}
+
+func fmtDBCfg(cfg TorHistoryConfig, hidePassword bool) string {
+	var pwd string
+	if hidePassword {
+		pwd = "<redacted>"
+	} else {
+		pwd = cfg.DBServer.Password
+	}
+	return fmt.Sprintf("Database configutation:  Host: %s\n  Port: %s\n  DB Name: %s\n  Username: %s\n  Password: %s",
+		cfg.DBServer.Host, cfg.DBServer.Port, cfg.DBServer.DBName, cfg.DBServer.Username, pwd)
 }
 
 /*func stringInSet( s *string, set []string) bool {
@@ -528,73 +576,100 @@ func parseConfigFile(cfgFileName *string, cfg *TorHistoryConfig) {
 }*/
 
 func allStringsInSet(needles *[]string, set *[]string) bool {
-	//fmt.Println("allStringsInSet")
 	if len(*needles) == 0 { // Optimization - if no needles - always true
-		//fmt.Println("no needles")
 		return true
 	}
 NeedleLoop:
 	for _, curNeedle := range *needles {
-		//found := false
-		//fmt.Printf("Current Needle: %s \n", curNeedle)
 		for _, curStr := range *set {
-			//fmt.Printf("  comp to %s\n", curStr)
 			if curStr == curNeedle {
-				//fmt.Println("needle match")
 				continue NeedleLoop
 			}
 		}
-		//if !found {
-		//fmt.Println("all needle fail")
 		return false
-		//}
 	}
-	//fmt.Println("all needles match")
 	return true
 }
 
-func parseCmdlnArguments() {
-	//ifPrintln cannot be use before arguments are processed
-	f_inputFileName = flag.String("input-data-file", "", "Use input file instead of downloading from the consensus")
-	f_configFileName = flag.String("config-file-name", "config.yml", "Full path of YAML config file")
-	f_consensusBackupFileName = flag.String("consensus-backup-file", "", "Make a backup of the consensus as downloaded at the supplied destination path/prefix. Timestamp is automatically appended.")
-	f_consensusBackupGZip = flag.Bool("consensus-backup-gzip", false, "GZip the backup file")
+func parseCmdlnArguments(cfg *TorHistoryConfig) {
+	// Read verbosity from command line
+	verbosity := flag.Uint("verbosity", 0, "Verbosity level. If negative print to Stderr")
+
+	// Read config filename if one provided
+	cfgFilename := flag.String("config-filename", "", "Full path of YAML config file")
+
+	input := flag.String("input-data-file", "", "Use input file instead of downloading from the consensus")
+	backup := flag.String("consensus-backup-file", "", "Make a backup of the consensus as downloaded at the supplied destination path/prefix. Timestamp is automatically appended.")
+	backupGzip := flag.Bool("consensus-backup-gzip", false, "GZip the backup file")
+
 	f_nodeFilter = flag.String("node-flag", "", "Node flag filter: BadExit, Exit, Fast, Guard, HSDir, Running, Stable, StaleDesc, V2Dir and Valid")
 	f_nodeInfo = flag.Bool("node-info", true, "Generic node information (on by default)")
 	f_expandIPs = flag.Bool("expand-ips", false, "Forces one per line expansion of the IPs in the answer section")
 	f_expandIPsAndFlags = flag.Bool("expand-ips-flags", false, "Forces one per line expansion of the IPs in the answer section")
-	f_debug = flag.Bool("debug", true, "Debug (true/false)")
-	f_verbosity = flag.Uint("verbosity", 3, "Verbosity level if negative print to Stderr")
-	f_consensusDownloadTime = flag.String("consensus-download-time", "", "The time the consensus was downloaded. Useful when importing data downloaded in the past")
-	f_fmtConsensusDownloadTime = flag.String("consensus-download-time-format", "", "The time the consensus was downloaded. Useful when importing data downloaded in the past")
-	f_extractConsensusDTfromFilename = flag.Bool("extract-consensus-download-time-from-filename", false, "When importing from a file, it attempts to read the consensus download date from the filename")
-	f_extractConsensusDTfromFilenameRegEx = flag.String("filename-regex", "", "When importing from a file and attempting to extract the timestamp from its name, this regex will be used")
+
+	consensusDownloadTime := flag.String("consensus-download-time", "", "The time the consensus was downloaded. Useful when importing data downloaded in the past")
+	consensusDownloadTime_fmt := flag.String("consensus-download-time-format", "", "The time the consensus was downloaded. Useful when importing data downloaded in the past")
+	extractCDLTfromFilename := flag.Bool("extract-consensus-download-time-from-filename", false, "When importing from a file, it attempts to read the consensus download date from the filename")
+	extractCDLTfromFilenameRegEx := flag.String("filename-regex", "", "When importing from a file and attempting to extract the timestamp from its name, this regex will be used")
 
 	flag.Parse()
-
-	if len(*f_extractConsensusDTfromFilenameRegEx) > 0 { // If regex for file extraction is specified then force file extraction bit
-		*f_extractConsensusDTfromFilename = true
+	cfg.Verbosity = *verbosity
+	// figure variable overriding from cmd line
+	if *cfgFilename != "" { // Read config file if one supplied
+		parseConfigFile(*cfgFilename, cfg)
 	}
 
+	if *backup != "" { // If backup file ame and compression supplied on command line
+		g_config.Backup.Filename = *backup
+		g_config.Backup.Gzip = *backupGzip
+	}
+
+	if *input != "" { // This overrides download
+		g_config.Tor.Filename = *input
+	}
+
+	if cfg.Tor.ConsensusURL == "" {
+		fmt.Println("Adding default consensus URL")
+		cfg.Tor.ConsensusURL = g_consensus_details_URL
+	}
+
+	cfg.Tor.ConsensusDLT = *consensusDownloadTime
+	cfg.Tor.ConsensusDLT_fmt = *consensusDownloadTime_fmt
+	cfg.Tor.ExtractDLTfromFilename = *extractCDLTfromFilename
+	cfg.Tor.ExtractDLTfromFilename_regex = *extractCDLTfromFilenameRegEx
+
+	if len(cfg.Tor.ExtractDLTfromFilename_regex) > 0 { // If regex for file extraction is specified then force file extraction bit
+		cfg.Tor.ExtractDLTfromFilename = true
+	}
+
+	// Validate DB arguments
+	if cfg.DBServer.Host != "" && cfg.DBServer.Port != "" && cfg.DBServer.DBName != "" && cfg.DBServer.Username != "" {
+		cfg.DBServer.Enabled = true
+	} else if cfg.DBServer.Host != "" || cfg.DBServer.Port != "" || cfg.DBServer.DBName != "" || cfg.DBServer.Username != "" || cfg.DBServer.Password != "" {
+		log.Fatal("Incomplete database configuation.\n" + fmtDBCfg(*cfg, true) + "\n")
+	}
+
+	////****************************************************
 	// Disable f_expandIPs if f_expandIPsAndFlags is on
 	if *f_expandIPsAndFlags {
 		*f_expandIPs = false
 	}
 
-	if *f_debug && len(flag.Args()) > 0 {
+	if cfg.Verbosity > 4 && len(flag.Args()) > 0 {
 		fmt.Println(os.Stderr, "DEBUG: Unprocessed args:", flag.Args())
 	}
+	//	ifPrintln(2, fmt.Sprintf("%v\n", *cfg))
 }
 
 func parseNodeFilters(f_nodeFilter *string) []string {
 	var matchFlags []string
 	if *f_nodeFilter == "" {
-		if *f_debug {
+		if g_config.Verbosity > 4 {
 			fmt.Fprintln(os.Stderr, "No filters were applied")
 		}
 	} else {
 		matchFlags = strings.Split(*f_nodeFilter, ",")
-		if *f_debug {
+		if g_config.Verbosity > 4 {
 			fmt.Fprintf(os.Stderr, "DEBUG: nodeFlag(s) in filter: ")
 			for _, i := range matchFlags {
 				fmt.Fprintf(os.Stderr, " %s", i)
@@ -605,7 +680,51 @@ func parseNodeFilters(f_nodeFilter *string) []string {
 	return matchFlags
 }
 
-func downloadConsensus(url string) *json.Decoder {
+func backupIfRequested(data []byte) {
+	// Check if backup is requested
+	if g_config.Backup.Filename == "" {
+		ifPrintln(-5, "No backup requested.")
+	} else {
+		ifPrintln(-5, "Backup requested.")
+		backupConsensus(data)
+	}
+}
+
+func getConsensus() TorResponse {
+	var data []byte
+	if g_config.Tor.Filename != "" {
+		data = readConsensusDataFromFile(g_config.Tor.Filename)
+	} else {
+		data = downloadConsensus(g_config.Tor.ConsensusURL)
+	}
+
+	backupIfRequested(data)
+
+	// Parse json
+	consensusData := json.NewDecoder(bytes.NewReader(data))
+
+	var tor_response TorResponse
+	err := consensusData.Decode(&tor_response)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "parsing Consensus file: %s", err.Error())
+		log.Fatal(err)
+	}
+
+	return tor_response
+}
+
+func readConsensusDataFromFile(fn string) []byte {
+	ifPrintln(1, "readConsensusDataFromFile(\""+fn+"\"): ")
+	defer ifPrintln(1, "readConsensusDataFromFile complete.")
+
+	dataFile, err := ioutil.ReadFile(fn)
+	if err != nil {
+		log.Fatal("ERROR: opening Consensus data file (%s). ", err.Error())
+	}
+	return dataFile
+}
+
+func downloadConsensus(url string) []byte {
 	ifPrintln(2, "Downloading Consensus details from: "+url)
 	defer ifPrintln(2, "Consensus download complete.")
 
@@ -615,21 +734,11 @@ func downloadConsensus(url string) *json.Decoder {
 	}
 	defer http_session.Body.Close()
 
-	// Check if backup is requested
-	if *f_consensusBackupFileName == "" {
-		ifPrintln(-5, "No backup requested.")
-		return json.NewDecoder(http_session.Body)
-	} else {
-		ifPrintln(-5, "Backup requested.")
-
-		data, err := ioutil.ReadAll(http_session.Body)
-		if err != nil {
-			log.Fatal(err)
-		}
-		backupConsensus(data)
-
-		return json.NewDecoder(bytes.NewReader(data))
+	data, err := ioutil.ReadAll(http_session.Body)
+	if err != nil {
+		log.Fatal(err)
 	}
+	return data
 }
 
 func backupConsensus(data []byte) {
@@ -637,8 +746,8 @@ func backupConsensus(data []byte) {
 	defer ifPrintln(2, "backupConsensus complete.")
 
 	t := time.Now().UTC()
-	fn := *f_consensusBackupFileName + "-" + t.Format("20060102150405")
-	if *f_consensusBackupGZip {
+	fn := g_config.Backup.Filename + "-" + t.Format("20060102150405")
+	if g_config.Backup.Gzip {
 		fn += ".gz"
 	}
 
@@ -646,7 +755,7 @@ func backupConsensus(data []byte) {
 	backup_file, _ := os.Create(fn)
 	defer backup_file.Close()
 
-	if *f_consensusBackupGZip {
+	if g_config.Backup.Gzip {
 		zw := gzip.NewWriter(backup_file)
 		zw.Name = fn
 		zw.ModTime = time.Now()
@@ -656,12 +765,10 @@ func backupConsensus(data []byte) {
 		if err != nil {
 			log.Fatal(err)
 		}
-
 		if err := zw.Close(); err != nil {
 			log.Fatal(err)
 		}
 	} else {
-		// Write to backup
 		backup_file.Write(data)
 	}
 }

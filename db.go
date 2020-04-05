@@ -11,6 +11,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net"
+	"regexp"
 	"strings"
 
 	"github.com/go-sql-driver/mysql"
@@ -27,6 +29,8 @@ type DB struct {
 	stmtLoadLatestTorRelays *sql.Stmt
 
 	// Caches
+	lrd map[string](map[string]string) // lrd = latest relay data
+
 	fp2idMap     map[string]string
 	region2idMap map[string]string
 	city2idMap   map[string]string
@@ -95,11 +99,12 @@ type DB struct {
 // Construct connection string from tokens and execute "Open()"
 // Initialize prepared statements
 func NewDB(Username string, Password string, Host string, Port string, DBName string) *DB {
+	ifPrintln(1, "Initializing database...")
+	defer ifPrintln(1, "Database Ready.")
 	var db DB
 	var err error
 
 	conString := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", Username, Password, Host, Port, DBName)
-	ifPrintln(-5, conString)
 
 	db.dbh, err = sql.Open("mysql", conString)
 	if err != nil {
@@ -108,11 +113,14 @@ func NewDB(Username string, Password string, Host string, Port string, DBName st
 
 	// Prepare various SQL queries
 	SQLStatements := map[string]**sql.Stmt{
-		"INSERT INTO Countries (CC, CountryName) VALUES( ?, ?)":                                  &db.stmtAddCountryCode,
-		"INSERT INTO TorQueries (Version, Relays_published, Bridges_published) VALUES( ?, ?, ?)": &db.stmtTorQueries,
+		"INSERT INTO Countries (CC, CountryName) VALUES( ?, ?)":                                                          &db.stmtAddCountryCode,
+		"INSERT INTO TorQueries (Version, Relays_published, Bridges_published, AquisitionTimestamp) VALUES( ?, ?, ?, ?)": &db.stmtTorQueries,
 
-		"INSERT INTO TorRelays (ID_NodeFingerprints, Nickname, Last_changed_address_or_port, First_seen, flags, jsd) VALUES(?, ?, ?, ?, ?, ?);": &db.stmtAddTorRelays,
-		"UPDATE TorRelays SET RecordLastSeen = ? WHERE ID = ?;":                                                                                 &db.stmtUpdTorRelaysRLS,
+		"INSERT INTO TorRelays (ID_NodeFingerprints, ID_Countries, ID_Regions, ID_Cities, ID_Platforms, ID_Versions, ID_Contacts, " +
+			"ID_ExitPolicies, ID_ExitPolicySummaries, ID_ExitPolicyV6Summaries, Nickname, Last_changed_address_or_port, First_seen, RecordTimeInserted, RecordLastSeen, flags, jsd) " +
+			"VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);": &db.stmtAddTorRelays,
+
+		"UPDATE TorRelays SET RecordLastSeen = ? WHERE ID = ?;": &db.stmtUpdTorRelaysRLS,
 
 		"INSERT INTO NodeFingerprints (Fingerprint) VALUES( ?)":  &db.stmtAddNodeFingerprints,
 		"SELECT ID FROM NodeFingerprints WHERE Fingerprint = ?;": &db.stmtGetNodeIdByFp,
@@ -169,23 +177,46 @@ func NewDBFromConfig(cfg TorHistoryConfig) *DB {
 	return NewDB(cfg.DBServer.Username, cfg.DBServer.Password, cfg.DBServer.Host, cfg.DBServer.Port, cfg.DBServer.DBName)
 }
 
+func (db *DB) initializeLatestRelayDataCache(lrd *map[string](map[string]string), cdts string) { // cdts generally is g_consensusDLTS
+	ifPrintln(3, "Initializing Latest Relay Data (LRD) cache...")
+	defer ifPrintln(3, "Latest Relay Data (LRD) cache ready.")
+
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database initializeLatestRelayDataCache.")
+	}
+	*lrd = g_db.SQLQueryTYPEOfMaps("mapOfMaps",
+		`SELECT Fingerprint, tr.ID id, Nickname, RecordTimeInserted, DATE_FORMAT( RecordLastSeen, "%Y%m%d%H%i%s") as RecordLastSeen, 
+			ID_Countries Country, CityName, PlatformName, VersionName, ContactName, First_seen, Last_changed_address_or_port, 
+			ExitPolicy, ExitPolicySummary, ExitPolicyV6Summary, tr.ID_Versions, tr.ID_Contacts, ID_NodeFingerprints
+			FROM TorRelays tr
+			LEFT JOIN NodeFingerprints nf ON tr.ID_NodeFingerprints = nf.ID 
+			LEFT JOIN Cities c ON ID_Cities = c.ID
+			LEFT JOIN Platforms p ON ID_Platforms = p.ID
+			LEFT JOIN Versions v ON ID_Versions = v.ID
+			LEFT JOIN Contacts ct ON ID_Contacts = ct.ID
+			LEFT JOIN ExitPolicies ep ON ID_ExitPolicies = ep.ID
+			LEFT JOIN ExitPolicySummaries eps ON ID_ExitPolicySummaries = eps.ID
+			LEFT JOIN ExitPolicyV6Summaries eps6 ON ID_ExitPolicyV6Summaries = eps6.ID
+			WHERE (ID_NodeFingerprints, RecordLastSeen) IN 
+			(SELECT ID_NodeFingerprints, max(RecordLastSeen) FROM TorRelays WHERE RecordLastSeen <= "`+cdts+`" GROUP BY ID_NodeFingerprints);`).(map[string](map[string]string))
+}
+
 func (db *DB) initCaches() {
+	ifPrintln(3, "initCaches: Initialiazing memory caches from database...")
+	defer ifPrintln(3, "Caches ready.")
 	if !db.initialized {
 		log.Fatal("Call to a method in uninitialized database" + "initCaches" + ".")
 	}
-	// ###### Refactor
-	ifPrintln(2, "initCaches: Initialiazing memory caches from database")
-	db.fp2idMap = db.SQLQueryKeyValue("SELECT ID, Fingerprint FROM NodeFingerprints;")
-	db.region2idMap = db.SQLQueryKeyValue("SELECT ID, RegionName FROM Regions;")
-	db.city2idMap = db.SQLQueryKeyValue("SELECT ID, CityName FROM Cities;")
-	//#######
-	db.platform2idMap = db.SQLQueryKeyValue("SELECT ID, PlatformName FROM Platforms;")
-	db.version2idMap = db.SQLQueryKeyValue("SELECT ID, VersionName FROM Versions;")
-	db.contact2idMap = db.SQLQueryKeyValue("SELECT ID, ContactName FROM Contacts;")
+	db.fp2idMap = db.SQLQueryKeyValue("SELECT Fingerprint, ID FROM NodeFingerprints;")
+	db.region2idMap = db.SQLQueryKeyValue("SELECT RegionName, ID FROM Regions;")
+	db.city2idMap = db.SQLQueryKeyValue("SELECT CityName, ID FROM Cities;")
+	db.platform2idMap = db.SQLQueryKeyValue("SELECT PlatformName, ID FROM Platforms;")
+	db.version2idMap = db.SQLQueryKeyValue("SELECT VersionName, ID FROM Versions;")
+	db.contact2idMap = db.SQLQueryKeyValue("SELECT ContactName, ID FROM Contacts;")
 
-	db.exitPol2idMap = db.SQLQueryKeyValue("SELECT ID, ExitPolicy FROM ExitPolicies;")
-	db.exitPolSum2idMap = db.SQLQueryKeyValue("SELECT ID, ExitPolicySummary FROM ExitPolicySummaries;")
-	db.exitPolV6Sum2idMap = db.SQLQueryKeyValue("SELECT ID, ExitPolicyV6Summary FROM ExitPolicyV6Summaries;")
+	db.exitPol2idMap = db.SQLQueryKeyValue("SELECT ExitPolicy, ID FROM ExitPolicies;")
+	db.exitPolSum2idMap = db.SQLQueryKeyValue("SELECT ExitPolicySummary, ID FROM ExitPolicySummaries;")
+	db.exitPolV6Sum2idMap = db.SQLQueryKeyValue("SELECT ExitPolicyV6Summary, ID FROM ExitPolicyV6Summaries;")
 
 	// Load latest records BEFORE the current insert timestamp. Note this allows us to insert older data files (retroactively)
 	db.latestOr4 = db.SQLQueryTYPEOfMaps("mapOfMapOfMaps", "SELECT ID_NodeFingerprints, INET_NTOA(ip4) ip4, ID, DATE_FORMAT( RecordLastSeen, '%Y%m%d%H%i%s') as RecordLastSeen, port "+
@@ -216,6 +247,9 @@ func (db *DB) initCaches() {
 }
 
 func (db *DB) initCountryNameCache() {
+	ifPrintln(3, "Initializing Countryname cache...")
+	defer ifPrintln(3, "Countryname cache ready.")
+
 	if !db.initialized {
 		log.Fatal("Call to a method in uninitialized database" + "initCountryNameCache" + ".")
 	}
@@ -224,7 +258,7 @@ func (db *DB) initCountryNameCache() {
 }
 
 func (db *DB) Close() {
-	ifPrintln(8, "DB Close called")
+	ifPrintln(8, "Database shutdown")
 	if db.initialized {
 		ifPrintln(4, "Closing statement and connection.")
 		db.dbh.Close()
@@ -241,7 +275,7 @@ func (db *DB) SQLQueryKeyValue(query string) map[string]string {
 	if !db.initialized {
 		log.Fatal("Call to a method in uninitialized database" + "SQLQueryKeyValue" + ".")
 	}
-	ifPrintln(4, "SQLQueryKeyValue("+db.escapePercentSign(query)+"): ")
+	ifPrintln(5, "SQLQueryKeyValue("+db.escapePercentSign(query)+"): ")
 	rows, err := db.dbh.Query(query)
 	if err != nil {
 		panic("func SQLQueryKeyValue: " + err.Error())
@@ -266,7 +300,7 @@ func (db *DB) SQLQueryKeyValue(query string) map[string]string {
 		}
 		resultMap[key] = val
 	}
-	ifPrintln(4, "func SQLQueryKeyValue RETURN a map (not expanded)")
+	ifPrintln(5, "func SQLQueryKeyValue RETURN a map (not expanded)")
 	return resultMap
 }
 
@@ -279,7 +313,7 @@ func (db *DB) SQLQueryKeyValue(query string) map[string]string {
 //		mapOfMapOfMaps: map[string](map[string](map[string]string))
 //		sliceOfSlice
 func (db *DB) SQLQueryTYPEOfMaps(TYPE string, query string) interface{} {
-	ifPrintln(4, "func SQLQueryTYPEOfMaps: ("+TYPE+"): "+db.escapePercentSign(query))
+	ifPrintln(5, "func SQLQueryTYPEOfMaps: ("+TYPE+", \n"+db.escapePercentSign(query)+"):")
 	if !db.initialized {
 		log.Fatal("Call to a method in uninitialized database.")
 	}
@@ -297,7 +331,7 @@ func (db *DB) SQLQueryTYPEOfMaps(TYPE string, query string) interface{} {
 	if err != nil {
 		panic("func SQLQueryTYPEOfMaps: " + err.Error()) // TODO
 	}
-	ifPrintln(6, fmt.Sprintf("Number of columns returned: %d\n", len(columns)))
+	ifPrintln(6, fmt.Sprintf("Number of columns returned: %d", len(columns)))
 
 	// Allocate row buffer for each column of type sql.RawBytes
 	// Data from rows.scan will be stored there
@@ -421,12 +455,12 @@ func (db *DB) GetNodeIdByFingerprint(fp string) string {
 	return id
 }*/
 
-func (db *DB) addToTorQueries(version string, relays_published string, bridges_published string) {
-	ifPrintln(4, "func addToTorQueries("+version+", "+relays_published+","+bridges_published+")")
+func (db *DB) addToTorQueries(version string, relays_published string, bridges_published string, aquisition_ts string) {
+	ifPrintln(4, "func addToTorQueries("+version+", "+relays_published+","+bridges_published+","+aquisition_ts+")")
 	if !db.initialized {
 		log.Fatal("Call to a method in uninitialized database.")
 	}
-	_, err := db.stmtTorQueries.Exec(version, relays_published, bridges_published)
+	_, err := db.stmtTorQueries.Exec(version, relays_published, bridges_published, aquisition_ts)
 	if err != nil {
 		panic("func addToTorQueries: " + err.Error())
 	}
@@ -439,7 +473,21 @@ func ipPort(input string) (string, string) {
 	var ip, port string
 	if input[0] == '[' { // IPv6
 		ip6AndPort := strings.SplitN(input, "]", 2)
-		ip = ip6AndPort[0][1:]
+		checkIP := net.ParseIP(ip6AndPort[0][1:])
+		if checkIP == nil {
+			log.Fatal("ipPort: problem parsing IPv6: " + ip)
+		}
+		ip = checkIP.String()
+
+		if !strings.Contains(ip, "::") && strings.Contains(ip, ":0:") { // Normalized already
+			re := regexp.MustCompile(`:0:`)
+			matches := re.FindAllStringSubmatchIndex(ip, 1)
+			if len(matches) > 0 {
+				last := matches[0]
+				ip = ip[:last[0]+1] + ip[last[1]-1:]
+			}
+		}
+
 		if len(ip6AndPort) >= 2 {
 			port = ip6AndPort[1][1:]
 		}
@@ -458,7 +506,7 @@ func (db *DB) addToIP(table string, fpid string, tsIns string, tsRls string, ipA
 	if !db.initialized {
 		log.Fatal("Call to a method in uninitialized database.")
 	}
-	defer ifPrintln(6, "addToIP: END")
+	defer ifPrintln(6, "addToIP: RETURN")
 
 	if len(ipAndPort) == 0 {
 		ifPrintln(6, "Empty IP/port")
@@ -511,6 +559,8 @@ func (db *DB) addToIP(table string, fpid string, tsIns string, tsRls string, ipA
 
 func (db *DB) updateIfNeededRelayAddressRLS(table string, fpid string, tsRls string, or string) {
 	ifPrintln(4, fmt.Sprintf("func updateIfNeededRelayAddressRLS: %s, %s, %s, %s", table, fpid, tsRls, or))
+	defer ifPrintln(4, "func updateIfNeededRelayAddressRLS: RETURN")
+
 	if !db.initialized {
 		log.Fatal("Call to a method in uninitialized database.")
 	}
@@ -555,35 +605,34 @@ func (db *DB) updateIfNeededRelayAddressRLS(table string, fpid string, tsRls str
 
 	if rec["port"] == port {
 		if rec["RecordLastSeen"] == tsRls {
-			ifPrintln(5, "COMPLETE MATCH: no need to update RLS for: "+tsRls+"; "+rec["RecordLastSeen"]+"; ")
+			ifPrintln(5, "func : COMPLETE MATCH: no need to update RLS for: "+tsRls+"; "+rec["RecordLastSeen"]+"; ")
 		} else {
-			ifPrintln(4, fmt.Sprintf("Updating RLS in %s. Rec id: %s. New time: %s", table, rec["ID"], tsRls))
+			ifPrintln(5, fmt.Sprintf("func updateIfNeededRelayAddressRLS: Updating RLS in %s. Rec id: %s. New time: %s", table, rec["ID"], tsRls))
 			_, err := updStmt.Exec(tsRls, rec["ID"])
 			if err != nil {
-				panic("func updateTorRelayRLS: " + err.Error())
+				panic("func updateIfNeededRelayAddressRLS: " + err.Error())
 			}
 		}
 	} else {
-		//##### Verbosity to 4
-		ifPrintln(1, fmt.Sprintf("%s new IP for %s: Inserting %s in DB and cache", fpid, table, or))
-		// Inserting into DB; there is no need to insert into the cache as it is guaranteed we are not
-		// going to go back to that fingerprint in this program run
+		ifPrintln(5, fmt.Sprintf("func updateIfNeededRelayAddressRLS: %s new IP for %s: Inserting %s in DB and cache", fpid, table, or))
 
-		//#####
+		// Adds IP to the corresponding Or, Exor Di table specified in table
 		g_db.addToIP(table, fpid, g_consensusDLTS, g_consensusDLTS, or)
 	}
 }
 
 func (db *DB) updateTorRelayRLS(id string, newTS string) {
 	ifPrintln(4, "updateTorRelayRLS: id: "+id+"; new timestamp: "+newTS)
+	defer ifPrintln(4, "updateTorRelayRLS: success")
+
 	if !db.initialized {
 		log.Fatal("Call to a method in uninitialized database.")
 	}
+	fmt.Printf("DEBUG QUERY stmtUpdTorRelaysRLS: %s/%s : %s \n", g_consensusDLTS, newTS, id)
 	_, err := db.stmtUpdTorRelaysRLS.Exec(newTS, id)
 	if err != nil {
 		panic("func updateTorRelayRLS: " + err.Error())
 	}
-	ifPrintln(4, "updateTorRelayRLS: success")
 }
 
 //***************************************************************************
@@ -722,42 +771,53 @@ func (db *DB) value2id(valueType string, value string) string {
 	switch valueType {
 	case "fingerprint":
 		cache = &db.fp2idMap
+		break
 	case "country": // this is a VERY SPECIAL case
 		// For countries we do not need to do a cache resolution as the
 		// ##### value = strings.ToLower(value) // Ensure there are not small letter coming from the Consensus
 		cache = &db.cc2cyNameMap
+		break
 	case "region":
 		cache = &db.region2idMap
+		break
 	case "city":
 		cache = &db.city2idMap
+		break
 	case "platform":
 		cache = &db.platform2idMap
+		break
 	case "version":
 		cache = &db.version2idMap
+		break
 	case "contact":
 		cache = &db.contact2idMap
+		break
 	case "exitp":
 		cache = &db.exitPol2idMap
+		break
 	case "exitps":
 		cache = &db.exitPolSum2idMap
+		break
 	case "exitps6":
 		cache = &db.exitPolV6Sum2idMap
+		break
 	default:
 		panic("value2id: Invalid key/value type: " + valueType)
+		break
 	}
 
 	if id, ok = (*cache)[value]; ok {
-		ifPrintln(6, fmt.Sprintf("Cache hit for %s %s, returning %s.\n", valueType, value, id))
+		ifPrintln(6, fmt.Sprintf("value2id: Cache hit for %s %s, returning %s.", valueType, value, id))
 	} else {
 		if valueType != "country" {
 			id = db.addKeyValue(valueType, value)
-			ifPrintln(4, fmt.Sprintf("Cache miss for %s %s, added to DB, returning %s.\n", valueType, value, id))
+			ifPrintln(4, fmt.Sprintf("value2id: Cache miss for %s %s, added to DB, returning %s.", valueType, value, id))
 		} else {
 			id = ""
-			ifPrintln(4, fmt.Sprintf("Cache miss on country ID %s, returning %s.\n", value, id))
+			ifPrintln(4, fmt.Sprintf("value2id: Cache miss on country ID %s, returning %s.", value, id))
 		}
 	}
-	ifPrintln(4, "func value2id: RETURN id: "+id)
+	ifPrintln(4, "func value2id: RETURN id: "+id+"\n")
 	return id
 }
 

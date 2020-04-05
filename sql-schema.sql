@@ -7,6 +7,7 @@ CREATE TABLE TorQueries (
 	queryTime TIMESTAMP NOT NULL,
 	Relays_published DATETIME NOT NULL, 
 	Bridges_published DATETIME NOT NULL,
+	AquisitionTimestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	PRIMARY KEY (ID)
 );
 
