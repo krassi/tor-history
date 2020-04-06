@@ -129,7 +129,7 @@ var f_expandIPs, f_expandIPsAndFlags *bool
 // Prints an error message if verbosity level is less than g_config.Verbosity threshold
 // Observes "Quiet" and suppresses all verbosity
 func ifPrintln(level int, msg string) {
-	if g_config.Quiet {
+	if g_config.Quiet && level > 0 { // stderr (level<0) is exempt from quiet
 		return
 	}
 	if uint(math.Abs(float64(level))) <= g_config.Verbosity {
