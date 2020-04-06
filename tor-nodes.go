@@ -819,6 +819,17 @@ func readConsensusDataFromFile(fn string) []byte {
 	if err != nil {
 		log.Fatal("ERROR: opening Consensus data file (%s). ", err.Error())
 	}
+
+	if strings.HasSuffix(fn, ".gz") { // Compressed backup
+		zr, err := gzip.NewReader(bytes.NewReader(dataFile))
+		if err != nil {
+			log.Fatal("ERROR: reading compressed (%s). ", err.Error())
+		}
+		if dataFile, err = ioutil.ReadAll(zr); err != nil {
+			log.Fatal(err)
+		}
+		zr.Close()
+	}
 	return dataFile
 }
 
