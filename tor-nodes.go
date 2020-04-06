@@ -124,9 +124,15 @@ type TorHistoryConfig struct {
 		Country        bool
 		AS             bool
 		Hostname       bool
+		Flags          bool
 		IPperLine      bool
 		//######
 	} `yaml:"Print"`
+	Filter struct {
+		Running     bool
+		Hibernating bool
+		matchFlags  []string
+	}
 }
 
 var g_config TorHistoryConfig
@@ -134,10 +140,6 @@ var g_consensus_details_URL = "https://onionoo.torproject.org/details"
 var g_db *DB
 
 var g_consensusDLTS string
-
-var f_nodeFilter *string
-var f_nodeInfo *bool
-var f_expandIPs, f_expandIPsAndFlags *bool
 
 // Prints an error message if verbosity level is less than g_config.Verbosity threshold
 // Observes "Quiet" and suppresses all verbosity
@@ -323,7 +325,10 @@ func printNodeInfo(relay *TorDetails) {
 	if g_config.Print.Hostname {
 		output = append(output, relay.Host_name)
 	}
-	// #######
+	if g_config.Print.Flags {
+		output = append(output, fmt.Sprintf("%v", relay.Flags))
+	}
+
 	res := ""
 	for _, t := range output {
 		res += t
@@ -352,36 +357,16 @@ func main() {
 	initialize()
 	defer cleanup()
 
-	// Extract the TOR node filters from the arguments
-	matchFlags := parseNodeFilters(f_nodeFilter)
-
-	ifPrintln(1, fmt.Sprintf("Filters requested: %v", matchFlags))
-
 	tor_response := getConsensus()
 	logDataImport(&tor_response)
 
-	/*
-		if allStringsInSet(&matchFlags, &relay.Flags) {
-
-			if *f_nodeInfo {
-				fmt.Printf("NODE: %s/%s/%s (%s) => %s\n", relay.Nickname, relay.Fingerprint, fpid, relay.Flags, relay.Exit_addresses)
-			}
-			if *f_expandIPs {
-				for _, i := range relay.Exit_addresses {
-					fmt.Println(i)
-				}
-			}
-			if *f_expandIPsAndFlags {
-				for _, i := range relay.Exit_addresses {
-					fmt.Printf("%s: %s\n", i, relay.Flags)
-				}
-			}
-		}
-	*/
-
 	for _, relay := range tor_response.Relays {
 		ifPrintln(4, "\n== Processing node with fingerprint/nickname: "+relay.Fingerprint+"/"+relay.Nickname+" ===============================")
-		// Check if this is a newer record
+
+		// Apply node filters
+		if !allStringsInSetMatch(&g_config.Filter.matchFlags, &relay.Flags) { // If not a match skip iteration
+			continue
+		}
 
 		printNodeInfo(&relay)
 
@@ -608,7 +593,7 @@ func cleanupRelayStruct(pr *TorDetails) {
 	//	pr.Or_addresses = ""
 	//	pr.Exit_addresses = ""
 	//	pr.Dir_address = ""
-	// ##### Deal with soon as it is highly volotile: pr.Last_seen = ""
+	// #### Deal with soon as it is highly volotile: pr.Last_seen = ""
 }
 
 func parseConfigFile(cfgFilename string, cfg *TorHistoryConfig) {
@@ -655,7 +640,7 @@ func fmtDBCfg(cfg TorHistoryConfig, hidePassword bool) string {
 	return false
 }*/
 
-func allStringsInSet(needles *[]string, set *[]string) bool {
+func allStringsInSetMatch(needles *[]string, set *[]string) bool {
 	if len(*needles) == 0 { // Optimization - if no needles - always true
 		return true
 	}
@@ -683,16 +668,10 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 	backup := flag.String("consensus-backup-file", "", "Make a backup of the consensus as downloaded at the supplied destination path/prefix. Timestamp is automatically appended.")
 	backupGzip := flag.Bool("consensus-backup-gzip", false, "GZip the backup file")
 
-	f_nodeFilter = flag.String("node-flag", "", "Node flag filter: BadExit, Exit, Fast, Guard, HSDir, Running, Stable, StaleDesc, V2Dir and Valid")
-	f_nodeInfo = flag.Bool("node-info", true, "Generic node information (on by default)")
-	f_expandIPsAndFlags = flag.Bool("expand-ips-flags", false, "Forces one per line expansion of the IPs in the answer section")
-
 	consensusDownloadTime := flag.String("consensus-download-time", "", "The time the consensus was downloaded. Useful when importing data downloaded in the past")
 	consensusDownloadTime_fmt := flag.String("consensus-download-time-format", "", "The time the consensus was downloaded. Useful when importing data downloaded in the past")
 	extractCDLTfromFilename := flag.Bool("extract-consensus-download-time-from-filename", false, "When importing from a file, it attempts to read the consensus download date from the filename")
 	extractCDLTfromFilenameRegEx := flag.String("filename-regex", "", "When importing from a file and attempting to extract the timestamp from its name, this regex will be used")
-
-	//#########
 
 	// Print line options
 	Separator := flag.String("separator", ",", "Separator to be used when data is printed on screen.")
@@ -704,11 +683,23 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 	Country := flag.Bool("country", false, "Print node country")
 	AS := flag.Bool("as", false, "Print node autonomous system")
 	Hostname := flag.Bool("hostname", false, "Print node honstname")
+	Flags := flag.Bool("flags", false, "Print node flags")
 	IPperLine := flag.Bool("ip-per-line", false, "If a field has more than one IP in an array, this forces them to be on separate lines and duplicates the rest of the information")
+	NodeInfo := flag.Bool("node-info", false, "Generic node information (shortcut for: nickname, fingerprint, hostname, and exit addresses)")
+
+	//#########
+
+	// Filter options
+	Running := flag.Bool("run", false, "Print nodes which are in rnning state")
+	Hibernating := flag.Bool("", false, "Print nodes which are in hibernating state")
+
+	// Extract the TOR node filters from the arguments
+	NodeFilter := flag.String("filter", "", "Node flag filter: BadExit, Exit, Fast, Guard, HSDir, Running, Stable, StaleDesc, V2Dir and Valid")
 
 	flag.Parse()
 	cfg.Verbosity = *verbosity
 	cfg.Quiet = *quiet
+	ifPrintln(1, fmt.Sprintf("Filters requested: %v", g_config.Filter.matchFlags))
 	// figure variable overriding from cmd line
 	if *cfgFilename != "" { // Read config file if one supplied
 		parseConfigFile(*cfgFilename, cfg)
@@ -754,13 +745,20 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 	cfg.Print.Country = *Country
 	cfg.Print.AS = *AS
 	cfg.Print.Hostname = *Hostname
+	cfg.Print.Flags = *Flags
 	cfg.Print.IPperLine = *IPperLine
 
-	////****************************************************
-	// Disable f_expandIPs if f_expandIPsAndFlags is on
-	if *f_expandIPsAndFlags {
-		*f_expandIPs = false
+	if *NodeInfo {
+		cfg.Print.Nickname = true
+		cfg.Print.Fingerprint = true
+		cfg.Print.Exit_addresses = true
+		cfg.Print.Hostname = true
 	}
+
+	// Filters
+	g_config.Filter.matchFlags = parseNodeFilters(*NodeFilter)
+	g_config.Filter.Running = *Running
+	g_config.Filter.Hibernating = *Hibernating
 
 	if cfg.Verbosity > 4 && len(flag.Args()) > 0 {
 		fmt.Println(os.Stderr, "DEBUG: Unprocessed args:", flag.Args())
@@ -768,21 +766,14 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 	//	ifPrintln(2, fmt.Sprintf("%v\n", *cfg))
 }
 
-func parseNodeFilters(f_nodeFilter *string) []string {
+func parseNodeFilters(nodeFilter string) []string {
 	var matchFlags []string
-	if *f_nodeFilter == "" {
-		if g_config.Verbosity > 4 {
-			fmt.Fprintln(os.Stderr, "No filters were applied")
-		}
+	if nodeFilter == "" {
+		// ##### Verbosity to 3 x 2
+		ifPrintln(2, "No filters were applied")
 	} else {
-		matchFlags = strings.Split(*f_nodeFilter, ",")
-		if g_config.Verbosity > 4 {
-			fmt.Fprintf(os.Stderr, "DEBUG: nodeFlag(s) in filter: ")
-			for _, i := range matchFlags {
-				fmt.Fprintf(os.Stderr, " %s", i)
-			}
-			fmt.Fprintf(os.Stderr, "\n")
-		}
+		matchFlags = strings.Split(nodeFilter, ",")
+		ifPrintln(2, fmt.Sprintf("DEBUG: nodeFlag(s) in filter: %v\n", matchFlags))
 	}
 	return matchFlags
 }
