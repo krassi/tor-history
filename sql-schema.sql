@@ -89,7 +89,6 @@ CREATE TABLE Or_addresses_v4 (
 	INDEX(ip4)
 );
 
-
 CREATE TABLE Or_addresses_v6 (
 	ID INT UNSIGNED AUTO_INCREMENT NOT NULL, 
 	ID_NodeFingerprints INT UNSIGNED NOT NULL,

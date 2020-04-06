@@ -546,7 +546,7 @@ func (db *DB) addToIP(table string, fpid string, tsIns string, tsRls string, ipA
 		}
 	}
 	var err error
-	if table == "Exit" {
+	if table == "Ex" {
 		ip := ipAndPort
 		_, err = stmt.Exec(fpid, tsIns, tsRls, ip)
 	} else {
@@ -629,7 +629,7 @@ func (db *DB) updateTorRelayRLS(id string, newTS string) {
 	if !db.initialized {
 		log.Fatal("Call to a method in uninitialized database.")
 	}
-	fmt.Printf("DEBUG QUERY stmtUpdTorRelaysRLS: %s/%s : %s \n", g_consensusDLTS, newTS, id)
+
 	_, err := db.stmtUpdTorRelaysRLS.Exec(newTS, id)
 	if err != nil {
 		panic("func updateTorRelayRLS: " + err.Error())

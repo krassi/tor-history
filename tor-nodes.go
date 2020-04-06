@@ -390,6 +390,8 @@ func main() {
 					// speed up queries against those index tables.
 					updateRelayAddressesIfNeeded(&relay, &g_db.lrd)
 
+					ifPrintln(3, "Updating RLS: "+fp+"/"+g_db.lrd[fp]["Nickname"]+".")
+					// ifPrintln(3, fmt.Sprintf("Updating RLS: Tor Relay(%s/%s): Record ID: %s (%s => %s)", fp, g_db.lrd[fp]["Nickname"], g_db.lrd[fp]["id"], g_db.lrd[fp]["RecordLastSeen"], g_consensusDLTS))
 					// Update the RecordLastSeen (RLS) timestamp
 					g_db.updateTorRelayRLS(g_db.lrd[fp]["id"], g_consensusDLTS)
 				}
@@ -656,6 +658,125 @@ NeedleLoop:
 	return true
 }
 
+func parseNodeFilters(nodeFilter string) []string {
+	var matchFlags []string
+	if nodeFilter == "" {
+		// ##### Verbosity to 3 x 2
+		ifPrintln(2, "No filters were applied")
+	} else {
+		matchFlags = strings.Split(nodeFilter, ",")
+		ifPrintln(2, fmt.Sprintf("DEBUG: nodeFlag(s) in filter: %v\n", matchFlags))
+	}
+	return matchFlags
+}
+
+func backupIfRequested(data []byte) {
+	// Check if backup is requested
+	if g_config.Backup.Filename == "" {
+		ifPrintln(-5, "No backup requested.")
+	} else {
+		ifPrintln(-5, "Backup requested.")
+		backupConsensus(data)
+	}
+}
+
+func getConsensus() TorResponse {
+	var data []byte
+	if g_config.Tor.Filename != "" {
+		data = readConsensusDataFromFile(g_config.Tor.Filename)
+	} else {
+		data = downloadConsensus(g_config.Tor.ConsensusURL)
+	}
+
+	backupIfRequested(data)
+
+	// Parse json
+	consensusData := json.NewDecoder(bytes.NewReader(data))
+
+	var tor_response TorResponse
+	err := consensusData.Decode(&tor_response)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "parsing Consensus file: %s", err.Error())
+		log.Fatal(err)
+	}
+
+	return tor_response
+}
+
+func readConsensusDataFromFile(fn string) []byte {
+	ifPrintln(1, "readConsensusDataFromFile(\""+fn+"\"): ")
+	defer ifPrintln(1, "readConsensusDataFromFile complete.")
+
+	dataFile, err := ioutil.ReadFile(fn)
+	if err != nil {
+		log.Fatal("ERROR: opening Consensus data file (%s). ", err.Error())
+	}
+
+	if strings.HasSuffix(fn, ".gz") { // Compressed backup
+		ifPrintln(3, "Reading compressed file...")
+		defer ifPrintln(3, "Decompression complete.")
+
+		zr, err := gzip.NewReader(bytes.NewReader(dataFile))
+		if err != nil {
+			log.Fatal("ERROR: reading compressed (%s). ", err.Error())
+		}
+		if dataFile, err = ioutil.ReadAll(zr); err != nil {
+			log.Fatal(err)
+		}
+		zr.Close()
+	}
+	return dataFile
+}
+
+func downloadConsensus(url string) []byte {
+	ifPrintln(2, "Downloading Consensus details from: "+url)
+	defer ifPrintln(2, "Consensus download complete.")
+
+	http_session, err := http.Get(url)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer http_session.Body.Close()
+
+	data, err := ioutil.ReadAll(http_session.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return data
+}
+
+func backupConsensus(data []byte) {
+	ifPrintln(2, "backupConsensus: ")
+	defer ifPrintln(2, "backupConsensus complete.")
+
+	t := time.Now().UTC()
+	fn := g_config.Backup.Filename + "-" + t.Format("20060102150405")
+	if g_config.Backup.Gzip {
+		fn += ".gz"
+	}
+
+	ifPrintln(-2, "Creating backup file: "+fn)
+	backup_file, _ := os.Create(fn)
+	defer backup_file.Close()
+
+	if g_config.Backup.Gzip {
+		zw := gzip.NewWriter(backup_file)
+		zw.Name = fn
+		zw.ModTime = time.Now()
+		zw.Comment = "tor-nodes"
+
+		_, err := zw.Write(data)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		backup_file.Write(data)
+	}
+}
+
 func parseCmdlnArguments(cfg *TorHistoryConfig) {
 	// Read verbosity from command line
 	verbosity := flag.Uint("verbosity", 0, "Verbosity level. If negative print to Stderr")
@@ -764,120 +885,4 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 		fmt.Println(os.Stderr, "DEBUG: Unprocessed args:", flag.Args())
 	}
 	//	ifPrintln(2, fmt.Sprintf("%v\n", *cfg))
-}
-
-func parseNodeFilters(nodeFilter string) []string {
-	var matchFlags []string
-	if nodeFilter == "" {
-		// ##### Verbosity to 3 x 2
-		ifPrintln(2, "No filters were applied")
-	} else {
-		matchFlags = strings.Split(nodeFilter, ",")
-		ifPrintln(2, fmt.Sprintf("DEBUG: nodeFlag(s) in filter: %v\n", matchFlags))
-	}
-	return matchFlags
-}
-
-func backupIfRequested(data []byte) {
-	// Check if backup is requested
-	if g_config.Backup.Filename == "" {
-		ifPrintln(-5, "No backup requested.")
-	} else {
-		ifPrintln(-5, "Backup requested.")
-		backupConsensus(data)
-	}
-}
-
-func getConsensus() TorResponse {
-	var data []byte
-	if g_config.Tor.Filename != "" {
-		data = readConsensusDataFromFile(g_config.Tor.Filename)
-	} else {
-		data = downloadConsensus(g_config.Tor.ConsensusURL)
-	}
-
-	backupIfRequested(data)
-
-	// Parse json
-	consensusData := json.NewDecoder(bytes.NewReader(data))
-
-	var tor_response TorResponse
-	err := consensusData.Decode(&tor_response)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "parsing Consensus file: %s", err.Error())
-		log.Fatal(err)
-	}
-
-	return tor_response
-}
-
-func readConsensusDataFromFile(fn string) []byte {
-	ifPrintln(1, "readConsensusDataFromFile(\""+fn+"\"): ")
-	defer ifPrintln(1, "readConsensusDataFromFile complete.")
-
-	dataFile, err := ioutil.ReadFile(fn)
-	if err != nil {
-		log.Fatal("ERROR: opening Consensus data file (%s). ", err.Error())
-	}
-
-	if strings.HasSuffix(fn, ".gz") { // Compressed backup
-		zr, err := gzip.NewReader(bytes.NewReader(dataFile))
-		if err != nil {
-			log.Fatal("ERROR: reading compressed (%s). ", err.Error())
-		}
-		if dataFile, err = ioutil.ReadAll(zr); err != nil {
-			log.Fatal(err)
-		}
-		zr.Close()
-	}
-	return dataFile
-}
-
-func downloadConsensus(url string) []byte {
-	ifPrintln(2, "Downloading Consensus details from: "+url)
-	defer ifPrintln(2, "Consensus download complete.")
-
-	http_session, err := http.Get(url)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer http_session.Body.Close()
-
-	data, err := ioutil.ReadAll(http_session.Body)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return data
-}
-
-func backupConsensus(data []byte) {
-	ifPrintln(2, "backupConsensus: ")
-	defer ifPrintln(2, "backupConsensus complete.")
-
-	t := time.Now().UTC()
-	fn := g_config.Backup.Filename + "-" + t.Format("20060102150405")
-	if g_config.Backup.Gzip {
-		fn += ".gz"
-	}
-
-	ifPrintln(-2, "Creating backup file: "+fn)
-	backup_file, _ := os.Create(fn)
-	defer backup_file.Close()
-
-	if g_config.Backup.Gzip {
-		zw := gzip.NewWriter(backup_file)
-		zw.Name = fn
-		zw.ModTime = time.Now()
-		zw.Comment = "tor-nodes"
-
-		_, err := zw.Write(data)
-		if err != nil {
-			log.Fatal(err)
-		}
-		if err := zw.Close(); err != nil {
-			log.Fatal(err)
-		}
-	} else {
-		backup_file.Write(data)
-	}
 }
