@@ -276,7 +276,7 @@ func init() {
 }
 
 func logDataImport(tor_response *TorResponse) {
-	ifPrintln(-3, fmt.Sprintf("TOR Version, build revision: %s, %s (Aquisition time: %s)",
+	ifPrintln(-3, fmt.Sprintf("TOR Version, build revision: %s, %s (Acquisition time: %s)",
 		tor_response.Version, tor_response.Build_revision, g_consensusDLTS))
 	if g_db != nil && g_db.initialized {
 		g_db.addToTorQueries(tor_response.Version, tor_response.Relays_published, tor_response.Bridges_published, g_consensusDLTS)
@@ -691,7 +691,7 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 
 	// Filter options
 	Running := flag.Bool("run", false, "Print nodes which are in rnning state")
-	Hibernating := flag.Bool("", false, "Print nodes which are in hibernating state")
+	Hibernating := flag.Bool("hib", false, "Print nodes which are in hibernating state")
 
 	// Extract the TOR node filters from the arguments
 	NodeFilter := flag.String("filter", "", "Node flag filter: BadExit, Exit, Fast, Guard, HSDir, Running, Stable, StaleDesc, V2Dir and Valid")

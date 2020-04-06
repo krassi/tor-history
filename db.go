@@ -113,8 +113,8 @@ func NewDB(Username string, Password string, Host string, Port string, DBName st
 
 	// Prepare various SQL queries
 	SQLStatements := map[string]**sql.Stmt{
-		"INSERT INTO Countries (CC, CountryName) VALUES( ?, ?)":                                                          &db.stmtAddCountryCode,
-		"INSERT INTO TorQueries (Version, Relays_published, Bridges_published, AquisitionTimestamp) VALUES( ?, ?, ?, ?)": &db.stmtTorQueries,
+		"INSERT INTO Countries (CC, CountryName) VALUES( ?, ?)":                                                           &db.stmtAddCountryCode,
+		"INSERT INTO TorQueries (Version, Relays_published, Bridges_published, AcquisitionTimestamp) VALUES( ?, ?, ?, ?)": &db.stmtTorQueries,
 
 		"INSERT INTO TorRelays (ID_NodeFingerprints, ID_Countries, ID_Regions, ID_Cities, ID_Platforms, ID_Versions, ID_Contacts, " +
 			"ID_ExitPolicies, ID_ExitPolicySummaries, ID_ExitPolicyV6Summaries, Nickname, Last_changed_address_or_port, First_seen, RecordTimeInserted, RecordLastSeen, flags, jsd) " +
@@ -456,12 +456,12 @@ func (db *DB) GetNodeIdByFingerprint(fp string) string {
 	return id
 }*/
 
-func (db *DB) addToTorQueries(version string, relays_published string, bridges_published string, aquisition_ts string) {
-	ifPrintln(4, "func addToTorQueries("+version+", "+relays_published+","+bridges_published+","+aquisition_ts+")")
+func (db *DB) addToTorQueries(version string, relays_published string, bridges_published string, acquisition_ts string) {
+	ifPrintln(4, "func addToTorQueries("+version+", "+relays_published+","+bridges_published+","+acquisition_ts+")")
 	if !db.initialized {
 		log.Fatal("Call to a method in uninitialized database.")
 	}
-	_, err := db.stmtTorQueries.Exec(version, relays_published, bridges_published, aquisition_ts)
+	_, err := db.stmtTorQueries.Exec(version, relays_published, bridges_published, acquisition_ts)
 	if err != nil {
 		panic("func addToTorQueries: " + err.Error())
 	}
@@ -554,7 +554,7 @@ func (db *DB) addToIP(table string, fpid string, tsIns string, tsRls string, ipA
 		_, err = stmt.Exec(fpid, tsIns, tsRls, ip, port)
 	}
 	if err != nil {
-		panic("func addToIPv(" + table + "): " + err.Error())
+		panic("func addToIP(" + table + "): " + err.Error())
 	}
 }
 
