@@ -92,7 +92,7 @@ type TorDetails struct {
 type TorHistoryConfig struct {
 	Verbosity uint `yaml:"verbosity"`
 	Quiet     bool // Overrides and level of verbosity; cannot be configured in config file
-	//CfgFilename string
+
 	DBServer struct {
 		Enabled  bool   //`yaml:"enabled"`
 		Port     string `yaml:"port"`
@@ -114,6 +114,19 @@ type TorHistoryConfig struct {
 		Filename string `yaml:"filename"`
 		Gzip     bool   `yaml:"gzip"`
 	} `yaml:"backup"`
+	Print struct {
+		Separator      string
+		Nickname       bool
+		Fingerprint    bool
+		Or_addresses   bool
+		Exit_addresses bool
+		Dir_address    bool
+		Country        bool
+		AS             bool
+		Hostname       bool
+		IPperLine      bool
+		//######
+	} `yaml:"Print"`
 }
 
 var g_config TorHistoryConfig
@@ -227,7 +240,7 @@ func initialize() {
 	// Acquire the Consensus download time. If importing from a file, it is
 	// taken from the command line or the filename itself. If downloaded it's now()
 	g_consensusDLTS = getConsensusDLTimestamp()
-	ifPrintln(2, "Consensus DownloadTimestamp (DLTS) check: "+g_consensusDLTS)
+	ifPrintln(-2, "Consensus DownloadTimestamp (DLTS) check: "+g_consensusDLTS)
 
 	if g_config.DBServer.Enabled { // Check id DB backend is enabled
 		ifPrintln(2, "Initializing all caches.")
@@ -268,6 +281,73 @@ func logDataImport(tor_response *TorResponse) {
 	}
 }
 
+func printNodeInfo(relay *TorDetails) {
+	var output []string
+	sep := g_config.Print.Separator
+	EXPAND_OR := "MULTIPLE_OR"
+	EXPAND_EX := "MULTIPLE_EX"
+
+	if g_config.Print.Nickname {
+		output = append(output, relay.Nickname)
+	}
+	if g_config.Print.Fingerprint {
+		output = append(output, relay.Fingerprint)
+	}
+	if g_config.Print.Or_addresses {
+		if g_config.Print.IPperLine && len(relay.Or_addresses) > 1 {
+			output = append(output, EXPAND_OR)
+		} else {
+			for _, i := range relay.Or_addresses {
+				output = append(output, i)
+			}
+		}
+	}
+	if g_config.Print.Exit_addresses {
+		if g_config.Print.IPperLine && len(relay.Exit_addresses) > 1 {
+			output = append(output, EXPAND_EX)
+		} else {
+			for _, i := range relay.Exit_addresses {
+				output = append(output, i)
+			}
+		}
+	}
+	if g_config.Print.Dir_address {
+		output = append(output, relay.Dir_address)
+	}
+	if g_config.Print.Country {
+		output = append(output, relay.Country)
+	}
+	if g_config.Print.AS {
+		output = append(output, relay.As)
+	}
+	if g_config.Print.Hostname {
+		output = append(output, relay.Host_name)
+	}
+	// #######
+	res := ""
+	for _, t := range output {
+		res += t
+		res += sep
+	}
+	if len(res) > 0 {
+		if strings.Contains(res, EXPAND_OR) {
+			for _, o := range relay.Or_addresses {
+				re := regexp.MustCompile(EXPAND_OR)
+				new := re.ReplaceAllString(res, o)
+				fmt.Println(new)
+			}
+		} else if strings.Contains(res, EXPAND_EX) {
+			for _, e := range relay.Exit_addresses {
+				re := regexp.MustCompile(EXPAND_EX)
+				new := re.ReplaceAllString(res, e)
+				fmt.Println(new)
+			}
+		} else {
+			fmt.Println(res)
+		}
+	}
+}
+
 func main() {
 	initialize()
 	defer cleanup()
@@ -302,6 +382,8 @@ func main() {
 	for _, relay := range tor_response.Relays {
 		ifPrintln(4, "\n== Processing node with fingerprint/nickname: "+relay.Fingerprint+"/"+relay.Nickname+" ===============================")
 		// Check if this is a newer record
+
+		printNodeInfo(&relay)
 
 		if g_db != nil && g_db.initialized { // Database backend logic
 			// Clean up excess space left/right
@@ -530,7 +612,7 @@ func cleanupRelayStruct(pr *TorDetails) {
 }
 
 func parseConfigFile(cfgFilename string, cfg *TorHistoryConfig) {
-	ifPrintln(1, "Reading configuration file: "+cfgFilename)
+	ifPrintln(-1, "Reading configuration file: "+cfgFilename)
 	if cfgFilename == "" {
 		return
 	}
@@ -603,13 +685,26 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 
 	f_nodeFilter = flag.String("node-flag", "", "Node flag filter: BadExit, Exit, Fast, Guard, HSDir, Running, Stable, StaleDesc, V2Dir and Valid")
 	f_nodeInfo = flag.Bool("node-info", true, "Generic node information (on by default)")
-	f_expandIPs = flag.Bool("expand-ips", false, "Forces one per line expansion of the IPs in the answer section")
 	f_expandIPsAndFlags = flag.Bool("expand-ips-flags", false, "Forces one per line expansion of the IPs in the answer section")
 
 	consensusDownloadTime := flag.String("consensus-download-time", "", "The time the consensus was downloaded. Useful when importing data downloaded in the past")
 	consensusDownloadTime_fmt := flag.String("consensus-download-time-format", "", "The time the consensus was downloaded. Useful when importing data downloaded in the past")
 	extractCDLTfromFilename := flag.Bool("extract-consensus-download-time-from-filename", false, "When importing from a file, it attempts to read the consensus download date from the filename")
 	extractCDLTfromFilenameRegEx := flag.String("filename-regex", "", "When importing from a file and attempting to extract the timestamp from its name, this regex will be used")
+
+	//#########
+
+	// Print line options
+	Separator := flag.String("separator", ",", "Separator to be used when data is printed on screen.")
+	Nickname := flag.Bool("nick", false, "Print node nickname")
+	Fingerprint := flag.Bool("fp", false, "Print node fingerprint")
+	Or_addresses := flag.Bool("or", false, "Print node relay addresses")
+	Exit_addresses := flag.Bool("ex", false, "Print node exit addresses")
+	Dir_address := flag.Bool("di", false, "Print node directory addresses")
+	Country := flag.Bool("country", false, "Print node country")
+	AS := flag.Bool("as", false, "Print node autonomous system")
+	Hostname := flag.Bool("hostname", false, "Print node honstname")
+	IPperLine := flag.Bool("ip-per-line", false, "If a field has more than one IP in an array, this forces them to be on separate lines and duplicates the rest of the information")
 
 	flag.Parse()
 	cfg.Verbosity = *verbosity
@@ -648,6 +743,18 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 	} else if cfg.DBServer.Host != "" || cfg.DBServer.Port != "" || cfg.DBServer.DBName != "" || cfg.DBServer.Username != "" || cfg.DBServer.Password != "" {
 		log.Fatal("Incomplete database configuation.\n" + fmtDBCfg(*cfg, true) + "\n")
 	}
+
+	// Process print line options
+	cfg.Print.Separator = *Separator
+	cfg.Print.Nickname = *Nickname
+	cfg.Print.Fingerprint = *Fingerprint
+	cfg.Print.Or_addresses = *Or_addresses
+	cfg.Print.Exit_addresses = *Exit_addresses
+	cfg.Print.Dir_address = *Dir_address
+	cfg.Print.Country = *Country
+	cfg.Print.AS = *AS
+	cfg.Print.Hostname = *Hostname
+	cfg.Print.IPperLine = *IPperLine
 
 	////****************************************************
 	// Disable f_expandIPs if f_expandIPsAndFlags is on
@@ -751,7 +858,7 @@ func backupConsensus(data []byte) {
 		fn += ".gz"
 	}
 
-	ifPrintln(3, "Creating backup file: "+fn)
+	ifPrintln(-2, "Creating backup file: "+fn)
 	backup_file, _ := os.Create(fn)
 	defer backup_file.Close()
 
