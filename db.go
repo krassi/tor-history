@@ -258,12 +258,13 @@ func (db *DB) initCountryNameCache() {
 }
 
 func (db *DB) Close() {
-	ifPrintln(8, "Database shutdown")
-	if db.initialized {
-		ifPrintln(4, "Closing statement and connection.")
-		db.dbh.Close()
-		db.stmtTorQueries.Close()
+	if db == nil || !db.initialized {
+		return
 	}
+	ifPrintln(8, "Database shutdown")
+	ifPrintln(4, "Closing statement and connection.")
+	db.dbh.Close()
+	db.stmtTorQueries.Close()
 }
 
 //***************************************************************************

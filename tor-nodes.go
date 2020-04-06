@@ -244,12 +244,13 @@ func initialize() {
 
 func cleanup() {
 	ifPrintln(5, "Starting cleanup()")
-	g_db.Close()
+	if g_db != nil {
+		g_db.Close()
+	}
 	ifPrintln(5, "Completed cleanup()")
 }
 
 func init() {
-	fmt.Println("Initializing...")
 	// Parse command line arguments first, to find the config file path and if we are using database backend
 	parseCmdlnArguments(&g_config)
 }
@@ -257,7 +258,7 @@ func init() {
 func logDataImport(tor_response *TorResponse) {
 	ifPrintln(-3, fmt.Sprintf("TOR Version, build revision: %s, %s (Aquisition time: %s)",
 		tor_response.Version, tor_response.Build_revision, g_consensusDLTS))
-	if g_db.initialized {
+	if g_db != nil && g_db.initialized {
 		g_db.addToTorQueries(tor_response.Version, tor_response.Relays_published, tor_response.Bridges_published, g_consensusDLTS)
 	}
 }
@@ -272,14 +273,6 @@ func main() {
 	ifPrintln(1, fmt.Sprintf("Filters requested: %v", matchFlags))
 
 	tor_response := getConsensus()
-	/*consensusData := getConsensus() //consensusData *json.Decoder
-	var tor_response TorResponse
-	err := consensusData.Decode(&tor_response)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "parsing Consensus file: %s", err.Error())
-		log.Fatal(err)
-	}
-	*/
 	logDataImport(&tor_response)
 
 	/*
@@ -305,7 +298,7 @@ func main() {
 		ifPrintln(4, "\n== Processing node with fingerprint/nickname: "+relay.Fingerprint+"/"+relay.Nickname+" ===============================")
 		// Check if this is a newer record
 
-		if g_db.initialized { // Database backend logic
+		if g_db != nil && g_db.initialized { // Database backend logic
 			// Clean up excess space left/right
 			relay.Contact = strings.TrimSpace(relay.Contact)
 
