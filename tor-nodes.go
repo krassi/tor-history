@@ -91,6 +91,7 @@ type TorDetails struct {
 
 type TorHistoryConfig struct {
 	Verbosity uint `yaml:"verbosity"`
+	Quiet     bool // Overrides and level of verbosity; cannot be configured in config file
 	//CfgFilename string
 	DBServer struct {
 		Enabled  bool   //`yaml:"enabled"`
@@ -125,8 +126,12 @@ var f_nodeFilter *string
 var f_nodeInfo *bool
 var f_expandIPs, f_expandIPsAndFlags *bool
 
+// Prints an error message if verbosity level is less than g_config.Verbosity threshold
+// Observes "Quiet" and suppresses all verbosity
 func ifPrintln(level int, msg string) {
-	// Prints an error message if verbosity level is less than g_config.Verbosity threshold
+	if g_config.Quiet {
+		return
+	}
 	if uint(math.Abs(float64(level))) <= g_config.Verbosity {
 		if level < 0 {
 			fmt.Fprintf(os.Stderr, msg+"\n")
@@ -587,6 +592,7 @@ NeedleLoop:
 func parseCmdlnArguments(cfg *TorHistoryConfig) {
 	// Read verbosity from command line
 	verbosity := flag.Uint("verbosity", 0, "Verbosity level. If negative print to Stderr")
+	quiet := flag.Bool("quiet", false, "Suppreses all verbocity")
 
 	// Read config filename if one provided
 	cfgFilename := flag.String("config-filename", "", "Full path of YAML config file")
@@ -607,6 +613,7 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 
 	flag.Parse()
 	cfg.Verbosity = *verbosity
+	cfg.Quiet = *quiet
 	// figure variable overriding from cmd line
 	if *cfgFilename != "" { // Read config file if one supplied
 		parseConfigFile(*cfgFilename, cfg)
@@ -622,7 +629,7 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 	}
 
 	if cfg.Tor.ConsensusURL == "" {
-		fmt.Println("Adding default consensus URL")
+		ifPrintln(-1, "Adding default consensus URL")
 		cfg.Tor.ConsensusURL = g_consensus_details_URL
 	}
 
