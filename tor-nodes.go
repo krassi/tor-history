@@ -539,7 +539,7 @@ func recordsMatch(relay TorDetails, lrdfp map[string]string) bool {
 		return true
 	} else {
 		// #### Just for debugging - delete later
-		ifPrintln(0, "NO MATCH: "+lrdfp["Fingerprint"])
+		ifPrintln(1, "NO MATCH: Inserting TorRelay: "+relay.Nickname+"/"+relay.Fingerprint)
 		if g_config.Verbosity >= 6 {
 			fmt.Println("(Current Relay data => LRD Cache data)")
 			fmt.Printf("Fingerprint: %s => %s\n", relay.Fingerprint, lrdfp["Fingerprint"])
@@ -566,11 +566,15 @@ func recordsMatch(relay TorDetails, lrdfp map[string]string) bool {
 			if relay.First_seen != lrdfp["First_seen"] {
 				fmt.Printf("FAIL FirstSeen: %s => %s\n", relay.First_seen, lrdfp["First_seen"])
 			}
-			/*
-				string(js_exitp) == lrdfp["ExitPolicy"] &&
-				string(js_exitps) == lrdfp["ExitPolicySummary"] &&
-				string(js_exitps6) == lrdfp["ExitPolicyV6Summary"]
-			*/
+			if string(js_exitp) != lrdfp["ExitPolicy"] {
+				fmt.Printf("FAIL ExitPolicy: %s => %s\n", relay.First_seen, lrdfp["ExitPolicy"])
+			}
+			if string(js_exitps) != lrdfp["ExitPolicySummary"] {
+				fmt.Printf("FAIL ExitPolicySummary: %s => %s\n", relay.First_seen, lrdfp["ExitPolicySummary"])
+			}
+			if string(js_exitps6) != lrdfp["ExitPolicyV6Summary"] {
+				fmt.Printf("FAIL ExitPolicyV6Summary: %s => %s\n", relay.First_seen, lrdfp["ExitPolicyV6Summary"])
+			}
 		}
 		return false
 	}
