@@ -156,13 +156,16 @@ func ifPrintln(level int, msg string) {
 	}
 }
 
-func getConsensusDLTimestamp() string { // cmdlineTS string
-	ifPrintln(6, "getConsensusDLTimestamp: ")
-	if g_config.Tor.ExtractDLTfromFilename && len(g_config.Tor.ConsensusDLT) > 0 {
-		log.Fatalln("Incompatible flags extract-consensus-download-time-from-filename and consensus-download-time. Remove one of them.")
-	}
-
+func getConsensusDLTimestamp(filename string) string { // cmdlineTS string
+	ifPrintln(6, "getConsensusDLTimestamp("+filename+"): ")
+	// Check if g_config.Tor.ExtractDLTfromFilename && len(g_config.Tor.ConsensusDLT) > 0 moved to parseCmdArgs
+	//#####
 	var t time.Time
+
+	if filename == "" {
+		filename = g_config.Tor.Filename
+		fmt.Printf("DEBUG: filename: " + filename)
+	}
 
 	if !g_config.Tor.ExtractDLTfromFilename && len(g_config.Tor.ConsensusDLT) == 0 {
 		ifPrintln(-3, "consensusDownloadTime: using system time")
@@ -179,10 +182,10 @@ func getConsensusDLTimestamp() string { // cmdlineTS string
 			// If RegEx supplied - try it
 			if len(g_config.Tor.ExtractDLTfromFilename_regex) > 0 { // If RegEx is provided use it to extract the date
 				re := regexp.MustCompile(g_config.Tor.ExtractDLTfromFilename_regex)
-				ts_matches = re.FindAllString(g_config.Tor.Filename, -1)
+				ts_matches = re.FindAllString(filename, -1)
 			} else { //No regex, try the old way
 				re := regexp.MustCompile(`[0-9][0-9-_:]+[0-9]`)
-				ts_matches = re.FindAllString(g_config.Tor.Filename, -1)
+				ts_matches = re.FindAllString(filename, -1)
 			}
 			ifPrintln(6, fmt.Sprintf("Extracted timestamp from filename: \n%v", ts_matches))
 		}
@@ -236,13 +239,8 @@ func matchTimestampToFormats(ts_matches []string, formats []string) *time.Time {
 }
 
 func initialize() {
-	ifPrintln(2, "Initializing subsystems and caches...")
-	defer ifPrintln(2, "Subsystems and caches initialized.")
-
-	// Acquire the Consensus download time. If importing from a file, it is
-	// taken from the command line or the filename itself. If downloaded it's now()
-	g_consensusDLTS = getConsensusDLTimestamp()
-	ifPrintln(-2, "Consensus DownloadTimestamp (DLTS) check: "+g_consensusDLTS)
+	ifPrintln(2, "Initializing caches...")
+	defer ifPrintln(2, "Caches initialized.")
 
 	if g_config.DBServer.Enabled { // Check id DB backend is enabled
 		ifPrintln(2, "Initializing all caches.")
@@ -250,6 +248,16 @@ func initialize() {
 
 		// Open DB connection
 		g_db = NewDBFromConfig(g_config)
+	}
+}
+
+func initializeCaches() {
+	ifPrintln(2, "Initializing caches...")
+	defer ifPrintln(2, "Caches initialized.")
+
+	if g_config.DBServer.Enabled { // Check id DB backend is enabled
+		ifPrintln(2, "Initializing all caches.")
+		defer ifPrintln(2, "All caches initialized.")
 
 		// Initialize DB caches
 		g_db.initCaches()
@@ -357,9 +365,19 @@ func main() {
 	initialize()
 	defer cleanup()
 
+	// Acquire the Consensus download time. If importing from a file, it is
+	// taken from the command line or the filename itself. If downloaded it's now()
+	g_consensusDLTS = getConsensusDLTimestamp("")
+	ifPrintln(-2, "Consensus DownloadTimestamp (DLTS) check: "+g_consensusDLTS)
+	initializeCaches()
+
 	tor_response := getConsensus()
 	logDataImport(&tor_response)
+	processTorResponse(&tor_response)
 
+}
+
+func processTorResponse(tor_response *TorResponse) {
 	for _, relay := range tor_response.Relays {
 		ifPrintln(4, "\n== Processing node with fingerprint/nickname: "+relay.Fingerprint+"/"+relay.Nickname+" ===============================")
 
@@ -401,7 +419,7 @@ func main() {
 			}
 		}
 	}
-	ifPrintln(5, "DONE: parsing Consensus file")
+	ifPrintln(5, "DONE: parsing Consensus data.")
 }
 
 func addNewTorRelayToDB(relay TorRelayDetails) {
@@ -789,7 +807,7 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 	// Read config filename if one provided
 	cfgFilename := flag.String("config-filename", "", "Full path of YAML config file")
 
-	input := flag.String("input-data-file", "", "Use input file instead of downloading from the consensus")
+	import_file := flag.String("import-data-file", "", "Use import file instead of downloading from the consensus")
 	backup := flag.String("consensus-backup-file", "", "Make a backup of the consensus as downloaded at the supplied destination path/prefix. Timestamp is automatically appended.")
 	backupGzip := flag.Bool("consensus-backup-gzip", false, "GZip the backup file")
 
@@ -824,6 +842,7 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 	flag.Parse()
 	cfg.Verbosity = *verbosity
 	cfg.Quiet = *quiet
+
 	ifPrintln(1, fmt.Sprintf("Filters requested: %v", g_config.Filter.matchFlags))
 	// figure variable overriding from cmd line
 	if *cfgFilename != "" { // Read config file if one supplied
@@ -834,9 +853,8 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 		g_config.Backup.Filename = *backup
 		g_config.Backup.Gzip = *backupGzip
 	}
-
-	if *input != "" { // This overrides download
-		g_config.Tor.Filename = *input
+	if *import_file != "" { // This overrides download
+		g_config.Tor.Filename = *import_file
 	}
 
 	if cfg.Tor.ConsensusURL == "" {
@@ -851,6 +869,9 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 
 	if len(cfg.Tor.ExtractDLTfromFilename_regex) > 0 { // If regex for file extraction is specified then force file extraction bit
 		cfg.Tor.ExtractDLTfromFilename = true
+	}
+	if g_config.Tor.ExtractDLTfromFilename && len(g_config.Tor.ConsensusDLT) > 0 {
+		log.Fatalln("Incompatible flags extract-consensus-download-time-from-filename and consensus-download-time. Remove one of them.")
 	}
 
 	// Validate DB arguments
