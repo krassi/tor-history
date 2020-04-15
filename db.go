@@ -177,6 +177,58 @@ func NewDBFromConfig(cfg TorHistoryConfig) *DB {
 	return NewDB(cfg.DBServer.Username, cfg.DBServer.Password, cfg.DBServer.Host, cfg.DBServer.Port, cfg.DBServer.DBName)
 }
 
+/*
+func IPtoRelayIDs(type string, ip46 string) []TorRelayDetails{
+// Given IP address and function (Or, Ex, Di), produces a list of nodes which occupied used that IP for that function
+// Since multiple relays may have used that IP it returns a list of TorRelay Nodes.
+// Maybe collect the time periods?
+	switch type {
+	case "Or":
+		break
+	}
+
+}
+*/
+
+/*
+func assembleRecordByIPID (Or, Ex, Di){
+	// Detect v4/v6
+	// Add time fram limitations
+	switch type {
+	case "Or":
+		"SELECT o4.ID, o4.ID_NodeFingerprints FROM Or_addresses_v4 o4 LEFT JOIN TorRelays tr ON o4.ID_NodeFingerprints = tr.ID_NodeFingerprints WHERE o4.ID = ?;", qID);
+		break
+	case "Ex":
+		break
+	case "Di":
+		break
+
+	}
+}
+
+func assembleRecordByTorRelayID(id uint) *TorRelayDetails {
+
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database initializeLatestRelayDataCache.")
+	}
+	*lrd = g_db.SQLQueryTYPEOfMaps("mapOfMaps",
+		`SELECT Fingerprint, tr.ID id, Nickname, RecordTimeInserted, DATE_FORMAT( RecordLastSeen, "%Y%m%d%H%i%s") as RecordLastSeen,
+			ID_Countries Country, CityName, PlatformName, VersionName, ContactName, First_seen, Last_changed_address_or_port,
+			ExitPolicy, ExitPolicySummary, ExitPolicyV6Summary, tr.ID_Versions, tr.ID_Contacts, ID_NodeFingerprints
+			FROM TorRelays tr
+			LEFT JOIN NodeFingerprints nf ON tr.ID_NodeFingerprints = nf.ID
+			LEFT JOIN Cities c ON ID_Cities = c.ID
+			LEFT JOIN Platforms p ON ID_Platforms = p.ID
+			LEFT JOIN Versions v ON ID_Versions = v.ID
+			LEFT JOIN Contacts ct ON ID_Contacts = ct.ID
+			LEFT JOIN ExitPolicies ep ON ID_ExitPolicies = ep.ID
+			LEFT JOIN ExitPolicySummaries eps ON ID_ExitPolicySummaries = eps.ID
+			LEFT JOIN ExitPolicyV6Summaries eps6 ON ID_ExitPolicyV6Summaries = eps6.ID
+			WHERE (ID_NodeFingerprints, RecordLastSeen) IN
+			(SELECT ID_NodeFingerprints, max(RecordLastSeen) FROM TorRelays WHERE RecordLastSeen <= "`+cdts+`" GROUP BY ID_NodeFingerprints);`).(map[string](map[string]string))
+
+}
+*/
 func (db *DB) initializeLatestRelayDataCache(lrd *map[string](map[string]string), cdts string) { // cdts generally is g_consensusDLTS
 	ifPrintln(3, "Initializing Latest Relay Data (LRD) cache...")
 	defer ifPrintln(3, "Latest Relay Data (LRD) cache ready.")

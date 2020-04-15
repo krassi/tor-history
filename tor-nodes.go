@@ -27,20 +27,20 @@ import (
 )
 
 type TorResponse struct {
-	Version                      string        // required; Onionoo protocol version string.
-	Next_major_version_scheduled string        // optional; UTC date (YYYY-MM-DD) when the next major protocol version is scheduled to be deployed. Omitted if no major protocol changes are planned.
-	Build_revision               string        // optional # Git revision of the Onionoo instance's software used to write this response, which will be omitted if unknown.
-	Relays_published             string        // required # UTC timestamp (YYYY-MM-DD hh:mm:ss) when the last known relay network status consensus started being valid. Indicates how recent the relay objects in this document are.
-	Relays_skipped               uint64        // optional # Number of skipped relays as requested by a positive "offset" parameter value. Omitted if zero.
-	Relays                       []TorDetails  // Relays array of objects // required # Array of relay objects as specified below.
-	Relays_truncated             uint64        // optional # Number of truncated relays as requested by a positive "limit" parameter value. Omitted if zero.
-	Bridges_published            string        // required # UTC timestamp (YYYY-MM-DD hh:mm:ss) when the last known bridge network status was published. Indicates how recent the bridge objects in this document are.
-	Bridges_skipped              uint64        // optional # Number of skipped bridges as requested by a positive "offset" parameter value. Omitted if zero.
-	Bridges                      []interface{} // Bridges array of objects // required # Array of bridge objects as specified below.
-	Bridges_truncated            uint64        // optional # Number of truncated bridges as requested by a positive "limit" parameter value. Omitted if zero.
+	Version                      string            // required; Onionoo protocol version string.
+	Next_major_version_scheduled string            // optional; UTC date (YYYY-MM-DD) when the next major protocol version is scheduled to be deployed. Omitted if no major protocol changes are planned.
+	Build_revision               string            // optional # Git revision of the Onionoo instance's software used to write this response, which will be omitted if unknown.
+	Relays_published             string            // required # UTC timestamp (YYYY-MM-DD hh:mm:ss) when the last known relay network status consensus started being valid. Indicates how recent the relay objects in this document are.
+	Relays_skipped               uint64            // optional # Number of skipped relays as requested by a positive "offset" parameter value. Omitted if zero.
+	Relays                       []TorRelayDetails // Relays array of objects // required # Array of relay objects as specified below.
+	Relays_truncated             uint64            // optional # Number of truncated relays as requested by a positive "limit" parameter value. Omitted if zero.
+	Bridges_published            string            // required # UTC timestamp (YYYY-MM-DD hh:mm:ss) when the last known bridge network status was published. Indicates how recent the bridge objects in this document are.
+	Bridges_skipped              uint64            // optional # Number of skipped bridges as requested by a positive "offset" parameter value. Omitted if zero.
+	Bridges                      []interface{}     // Bridges array of objects // required # Array of bridge objects as specified below.
+	Bridges_truncated            uint64            // optional # Number of truncated bridges as requested by a positive "limit" parameter value. Omitted if zero.
 }
 
-type TorDetails struct {
+type TorRelayDetails struct {
 	Nickname                     string      `json:",omitempty"` // required # Relay nickname consisting of 1–19 alphanumerical characters. Turned into required field on March 14, 2018.
 	Fingerprint                  string      `json:",omitempty"` // required # Relay fingerprint consisting of 40 upper-case hexadecimal characters.
 	Or_addresses                 []string    `json:",omitempty"` // required # Array of IPv4 or IPv6 addresses and TCP ports or port lists where the relay accepts onion-routing connections. The first address is the primary onion-routing address that the relay used to register in the network, subsequent addresses are in arbitrary order. IPv6 hex characters are all lower-case.
@@ -283,7 +283,7 @@ func logDataImport(tor_response *TorResponse) {
 	}
 }
 
-func printNodeInfo(relay *TorDetails) {
+func printNodeInfo(relay *TorRelayDetails) {
 	var output []string
 	sep := g_config.Print.Separator
 	EXPAND_OR := "MULTIPLE_OR"
@@ -404,7 +404,7 @@ func main() {
 	ifPrintln(5, "DONE: parsing Consensus file")
 }
 
-func addNewTorRelayToDB(relay TorDetails) {
+func addNewTorRelayToDB(relay TorRelayDetails) {
 	ifPrintln(4, fmt.Sprintf("func addNewTorRelayToDB(%q): ", relay))
 	defer ifPrintln(4, "func addNewTorRelayToDB: RETURN")
 
@@ -489,7 +489,7 @@ func addNewRelayAddresses(lastID string, fpid string, Or_addresses []string, Exi
 	}
 }
 
-func updateRelayAddressesIfNeeded(relay *TorDetails, lrd *map[string](map[string]string)) {
+func updateRelayAddressesIfNeeded(relay *TorRelayDetails, lrd *map[string](map[string]string)) {
 	ifPrintln(4, "func updateRelayAddressesIfNeeded(BEGIN): ")
 	defer ifPrintln(4, "func updateRelayAddressesIfNeeded: RETURN")
 
@@ -517,7 +517,7 @@ func updateRelayAddressesIfNeeded(relay *TorDetails, lrd *map[string](map[string
 	}
 }
 
-func recordsMatch(relay TorDetails, lrdfp map[string]string) bool {
+func recordsMatch(relay TorRelayDetails, lrdfp map[string]string) bool {
 	// Prepare the JSON objects
 	js_exitp, _ := json.Marshal(relay.Exit_policy)
 	js_exitps, _ := json.Marshal(relay.Exit_policy_summary)
@@ -580,7 +580,7 @@ func recordsMatch(relay TorDetails, lrdfp map[string]string) bool {
 	}
 }
 
-func cleanupRelayStruct(pr *TorDetails) {
+func cleanupRelayStruct(pr *TorRelayDetails) {
 	pr.Nickname = ""
 	pr.Country = ""
 	pr.Country_name = ""
