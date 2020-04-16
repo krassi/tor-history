@@ -1,7 +1,16 @@
 dbserver:
-  host:
-  port:
-  database:
-  username:
-  password:
+  host: localhost
+  port: 3306
+  database: tor_history
+  username: 
+  password: 
   
+consensus:
+  url: https://onionoo.torproject.org/details
+
+backup:
+  filename: 
+  gzip: true
+
+verbosity: 0
+

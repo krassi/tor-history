@@ -142,6 +142,32 @@ CREATE TABLE Dir_addresses_v6 (
 	INDEX(ip6) 
 );
 
+CREATE TABLE TorRelays(
+	ID INT UNSIGNED AUTO_INCREMENT NOT NULL,
+	RecordTimeInserted TIMESTAMP NOT NULL,
+	RecordLastSeen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	ID_NodeFingerprints INT UNSIGNED NOT NULL,
+
+	ID_Countries CHAR(2),
+	ID_Regions SMALLINT UNSIGNED,
+	ID_Cities SMALLINT UNSIGNED,
+
+	ID_Platforms SMALLINT UNSIGNED NOT NULL,
+	ID_Versions SMALLINT UNSIGNED NOT NULL,
+	ID_Contacts SMALLINT UNSIGNED,
+	ID_ExitPolicies INT UNSIGNED NOT NULL,
+	ID_ExitPolicySummaries INT UNSIGNED NOT NULL,
+	ID_ExitPolicyV6Summaries INT UNSIGNED NOT NULL,
+
+	Nickname CHAR(25) NOT NULL,
+	Last_changed_address_or_port DATETIME NOT NULL,
+	
+	First_seen DATETIME NOT NULL,
+	flags JSON,
+	jsd JSON,
+	PRIMARY KEY (ID),
+	INDEX fp_time (ID_NodeFingerprints, RecordLastSeen)
+);
 
 GRANT ALL PRIVILEGES ON tor_history.* TO 'tor-admin'@'%' IDENTIFIED BY <password> WITH GRANT OPTION;
 GRANT INSERT, DELETE, SELECT ON tor_history.TorQueries TO 'tor-rw'@'%' IDENTIFIED BY <password>;
