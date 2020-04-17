@@ -18,6 +18,8 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -94,12 +96,13 @@ type TorHistoryConfig struct {
 	Quiet     bool // Overrides and level of verbosity; cannot be configured in config file
 
 	DBServer struct {
-		Enabled  bool   //`yaml:"enabled"`
-		Port     string `yaml:"port"`
-		Host     string `yaml:"host"`
-		DBName   string `yaml:"database"`
-		Username string `yaml:"username"`
-		Password string `yaml:"password"`
+		Enabled      bool   //`yaml:"enabled"`
+		Port         string `yaml:"port"`
+		Host         string `yaml:"host"`
+		DBName       string `yaml:"database"`
+		Username     string `yaml:"username"`
+		Password     string `yaml:"password"`
+		ReInitCaches int    `yaml:"reinit-caches"`
 	} `yaml:"dbserver"`
 	Tor struct {
 		ConsensusURL     string `yaml:"url"`      // Consensus URL
@@ -126,7 +129,6 @@ type TorHistoryConfig struct {
 		Hostname       bool
 		Flags          bool
 		IPperLine      bool
-		//######
 	} `yaml:"Print"`
 	Filter struct {
 		Running     bool
@@ -158,13 +160,10 @@ func ifPrintln(level int, msg string) {
 
 func getConsensusDLTimestamp(filename string) string { // cmdlineTS string
 	ifPrintln(6, "getConsensusDLTimestamp("+filename+"): ")
-	// Check if g_config.Tor.ExtractDLTfromFilename && len(g_config.Tor.ConsensusDLT) > 0 moved to parseCmdArgs
-	//#####
 	var t time.Time
 
 	if filename == "" {
 		filename = g_config.Tor.Filename
-		fmt.Printf("DEBUG: filename: " + filename)
 	}
 
 	if !g_config.Tor.ExtractDLTfromFilename && len(g_config.Tor.ConsensusDLT) == 0 {
@@ -200,7 +199,7 @@ func getConsensusDLTimestamp(filename string) string { // cmdlineTS string
 	str := fmt.Sprintf("%04d%02d%02d%02d%02d%02d",
 		t.Year(), t.Month(), t.Day(),
 		t.Hour(), t.Minute(), t.Second())
-	ifPrintln(3, "consensusDownloadTime: returning timestamp: "+str)
+	ifPrintln(3, "consensusDownloadTime: returning (DLTS) timestamp: "+str)
 	return str
 }
 
@@ -367,14 +366,99 @@ func main() {
 
 	// Acquire the Consensus download time. If importing from a file, it is
 	// taken from the command line or the filename itself. If downloaded it's now()
-	g_consensusDLTS = getConsensusDLTimestamp("")
-	ifPrintln(-2, "Consensus DownloadTimestamp (DLTS) check: "+g_consensusDLTS)
-	initializeCaches()
+	if g_config.Tor.Filename == "" {
+		// Set Consensus download time. For downloads it is the sytem time (now())
+		g_consensusDLTS = getConsensusDLTimestamp("")
+		initializeCaches()
 
-	tor_response := getConsensus()
-	logDataImport(&tor_response)
-	processTorResponse(&tor_response)
+		tor_response := getConsensus(true, g_config.Tor.ConsensusURL)
+		logDataImport(&tor_response)
+		processTorResponse(&tor_response)
+	} else {
+		filenames, err := filepath.Glob(g_config.Tor.Filename)
+		if err != nil || len(filenames) == 0 {
+			log.Fatal("Bad filename pattern: ", g_config.Tor.Filename)
+		}
 
+		if len(filenames) > 1 {
+			ifPrintln(2, fmt.Sprintf("Bulk import detected (%s). Number of files: %d", g_config.Tor.Filename, len(filenames)))
+			if g_config.Tor.ConsensusDLT != "" {
+				log.Fatal("Bulk import detected however -consensus-download-time is also specified.")
+			}
+			if !g_config.Tor.ExtractDLTfromFilename {
+				ifPrintln(-1, "WARNING: operating in bulk mode without ExtractDLTfromFilename set. Turning it on.")
+				g_config.Tor.ExtractDLTfromFilename = true
+			}
+		}
+
+		g_consensusDLTS = getConsensusDLTimestamp(filenames[0])
+		initializeCaches() // Caches are initialized only for the first file
+
+		var tor_response, previous_tor_response TorResponse
+		for num, fn := range filenames {
+			bench_start := time.Now()
+			// Initialize the timestamp for every file
+			g_consensusDLTS = getConsensusDLTimestamp(filenames[num])
+
+			// Only refresh the caches every g_config.DBServer.ReInitCaches times
+			if (num % g_config.DBServer.ReInitCaches) == 0 {
+				initializeCaches()
+			} else {
+				bench_cache := time.Now()
+				g_db.initializeLatestRelayDataCache(&g_db.lrd, g_consensusDLTS)
+				ifPrintln(1, fmt.Sprintf("TorRelay cache reload time: %v", time.Since(bench_cache)))
+			}
+
+			ifPrintln(1, fmt.Sprintf("Importing sequence: %d; filename: %s.", num, fn))
+			tor_response = getConsensus(false, fn)
+			if num != 0 { // shortcut
+				old_miss := extractNewAndUpdatedRelays(previous_tor_response.Relays, tor_response.Relays)
+				previous_tor_response = tor_response
+				tor_response.Relays = old_miss
+			} else { // num == 0
+				previous_tor_response = tor_response
+			}
+
+			logDataImport(&tor_response)
+			processTorResponse(&tor_response)
+			ifPrintln(1, fmt.Sprintf("Batch added in: %v", time.Since(bench_start)))
+		}
+	}
+}
+
+func extractNewAndUpdatedRelays(old []TorRelayDetails, new []TorRelayDetails) []TorRelayDetails {
+	ifPrintln(3, "extractNewAndUpdatedRelays: START")
+	defer ifPrintln(3, "extractNewAndUpdatedRelays: END")
+
+	var _result = make([]TorRelayDetails, 0, 9000)
+
+	// Takes the old and new
+	// build map fingerprint to ID for the previous/old dataset, to accelerate lookups
+	fp2id := make(map[string]int)
+	for id, node := range old {
+		fp2id[node.Fingerprint] = id
+	}
+
+	for id, n := range new { // Iterate over the new entries and if an old entry is a complete match then do not add it to the result.
+		old_id, found := fp2id[n.Fingerprint]
+		if found {
+			// comare them
+			if reflect.DeepEqual(n, old[old_id]) {
+				delete(fp2id, n.Fingerprint)
+			} else {
+				// Nodes are different add to results
+				_result = append(_result, new[id])
+			}
+		} else { // Not found in old array (add to results)
+			_result = append(_result, new[id])
+		}
+	}
+
+	ifPrintln(1, fmt.Sprintf("Bulk entry mode new entries for this batch: %d.", len(_result)))
+	for _, i := range _result {
+		ifPrintln(2, "Adding node: "+i.Nickname+"/"+i.Fingerprint)
+	}
+	return _result
 }
 
 func processTorResponse(tor_response *TorResponse) {
@@ -399,8 +483,10 @@ func processTorResponse(tor_response *TorResponse) {
 				ifPrintln(4, "DEBUG: g_consensusDLTS: "+g_consensusDLTS+"; lrd[fp]['RecordLastSeen']: "+g_db.lrd[fp]["RecordLastSeen"])
 
 				// Record Last Seen timestamps match?
-				if g_consensusDLTS == g_db.lrd[fp]["RecordLastSeen"] { // Last seen matches - no updates
+				if g_consensusDLTS == g_db.lrd[fp]["RecordLastSeen"] { // Last seen matches - no updates; if DLTS < RLS, it means we are inserting older records
 					ifPrintln(4, fmt.Sprintf("DEBUG: TorRelay %s records RLS TIMESTAMPS MATCH!!! No DB update need at all", fp))
+				} else if g_consensusDLTS < g_db.lrd[fp]["RecordLastSeen"] { // Last seen matches - no updates; if DLTS < RLS, it means we are inserting older records
+					ifPrintln(4, fmt.Sprintf("DEBUG: TorRelay %s records RLS TIMESTAMP is NEWER than imported file!!! No DB update need at all", fp))
 				} else { // Update RecordLastSeen of TorRelay and dependent records
 					ifPrintln(4, fmt.Sprintf("DEBUG: TorRelay %s records RLS TIMESTAMPS do not match. Need to check relay addresses", fp))
 
@@ -408,7 +494,7 @@ func processTorResponse(tor_response *TorResponse) {
 					// speed up queries against those index tables.
 					updateRelayAddressesIfNeeded(&relay, &g_db.lrd)
 
-					ifPrintln(3, "Updating RLS: "+fp+"/"+g_db.lrd[fp]["Nickname"]+".")
+					ifPrintln(3, fmt.Sprintf("Updating RLS: %s/%s; TRID: %s; RLS(old/new): %s/%s.", fp, g_db.lrd[fp]["Nickname"], g_db.lrd[fp]["id"], g_db.lrd[fp]["RecordLastSeen"], g_consensusDLTS))
 					// ifPrintln(3, fmt.Sprintf("Updating RLS: Tor Relay(%s/%s): Record ID: %s (%s => %s)", fp, g_db.lrd[fp]["Nickname"], g_db.lrd[fp]["id"], g_db.lrd[fp]["RecordLastSeen"], g_consensusDLTS))
 					// Update the RecordLastSeen (RLS) timestamp
 					g_db.updateTorRelayRLS(g_db.lrd[fp]["id"], g_consensusDLTS)
@@ -451,14 +537,7 @@ func addNewTorRelayToDB(relay TorRelayDetails) {
 	// Cleanup/compact the JSON object before marshaling
 	cleanupRelayStruct(&relay)
 
-	// ####
 	jsFlags, _ := json.Marshal(relay.Flags)
-	/*fmt.Println("=====Flags ==========")
-	fmt.Println(relay.Flags)
-	fmt.Println("==== js Flags ===========")
-	fmt.Println(jsFlags)
-	fmt.Println("===============")
-	*/
 	jsRelay, _ := json.Marshal(relay)
 
 	ifPrintln(5, fmt.Sprintf("=============== INSERTING RECORD in TorRelays =================\n"+
@@ -515,7 +594,6 @@ func updateRelayAddressesIfNeeded(relay *TorRelayDetails, lrd *map[string](map[s
 	fp := (*relay).Fingerprint
 	if len(relay.Or_addresses) > 0 {
 		for _, or := range relay.Or_addresses {
-			//fmt.Println("TorRelay: Or_addresses: " + or)
 			g_db.updateIfNeededRelayAddressRLS("Or", (*lrd)[fp]["ID_NodeFingerprints"], g_consensusDLTS, or)
 		}
 	}
@@ -523,14 +601,12 @@ func updateRelayAddressesIfNeeded(relay *TorRelayDetails, lrd *map[string](map[s
 	ifPrintln(6, "Checking Exit...")
 	if len(relay.Exit_addresses) > 0 {
 		for _, ex := range relay.Exit_addresses {
-			//fmt.Println("TorRelay: Exit_addresses" + ex)
 			g_db.updateIfNeededRelayAddressRLS("Ex", (*lrd)[fp]["ID_NodeFingerprints"], g_consensusDLTS, ex)
 		}
 	}
 
 	ifPrintln(6, "Checking Directory...")
 	if len(relay.Dir_address) > 0 {
-		//fmt.Println("TorRelay: Dir_addresses" + relay.Dir_address)
 		g_db.updateIfNeededRelayAddressRLS("Di", (*lrd)[fp]["ID_NodeFingerprints"], g_consensusDLTS, relay.Dir_address)
 	}
 }
@@ -553,11 +629,10 @@ func recordsMatch(relay TorRelayDetails, lrdfp map[string]string) bool {
 		string(js_exitps) == lrdfp["ExitPolicySummary"] &&
 		string(js_exitps6) == lrdfp["ExitPolicyV6Summary"] {
 
-		ifPrintln(3, "MATCHED: "+lrdfp["Fingerprint"])
+		ifPrintln(4, "MATCHED: "+lrdfp["Fingerprint"])
 		return true
 	} else {
-		// #### Just for debugging - delete later
-		ifPrintln(1, "NO MATCH: Inserting TorRelay: "+relay.Nickname+"/"+relay.Fingerprint)
+		ifPrintln(3, "NO MATCH: Inserting TorRelay: "+relay.Nickname+"/"+relay.Fingerprint)
 		if g_config.Verbosity >= 6 {
 			fmt.Println("(Current Relay data => LRD Cache data)")
 			fmt.Printf("Fingerprint: %s => %s\n", relay.Fingerprint, lrdfp["Fingerprint"])
@@ -683,8 +758,7 @@ NeedleLoop:
 func parseNodeFilters(nodeFilter string) []string {
 	var matchFlags []string
 	if nodeFilter == "" {
-		// ##### Verbosity to 3 x 2
-		ifPrintln(2, "No filters were applied")
+		ifPrintln(3, "No filters were applied")
 	} else {
 		matchFlags = strings.Split(nodeFilter, ",")
 		ifPrintln(2, fmt.Sprintf("DEBUG: nodeFlag(s) in filter: %v\n", matchFlags))
@@ -702,12 +776,12 @@ func backupIfRequested(data []byte) {
 	}
 }
 
-func getConsensus() TorResponse {
+func getConsensus(is_url bool, location string) TorResponse {
 	var data []byte
-	if g_config.Tor.Filename != "" {
-		data = readConsensusDataFromFile(g_config.Tor.Filename)
+	if is_url {
+		data = downloadConsensus(location)
 	} else {
-		data = downloadConsensus(g_config.Tor.ConsensusURL)
+		data = readConsensusDataFromFile(location)
 	}
 
 	backupIfRequested(data)
@@ -726,8 +800,8 @@ func getConsensus() TorResponse {
 }
 
 func readConsensusDataFromFile(fn string) []byte {
-	ifPrintln(1, "readConsensusDataFromFile(\""+fn+"\"): ")
-	defer ifPrintln(1, "readConsensusDataFromFile complete.")
+	ifPrintln(4, "readConsensusDataFromFile(\""+fn+"\"): ")
+	defer ifPrintln(4, "readConsensusDataFromFile complete.")
 
 	dataFile, err := ioutil.ReadFile(fn)
 	if err != nil {
@@ -811,10 +885,19 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 	backup := flag.String("consensus-backup-file", "", "Make a backup of the consensus as downloaded at the supplied destination path/prefix. Timestamp is automatically appended.")
 	backupGzip := flag.Bool("consensus-backup-gzip", false, "GZip the backup file")
 
+	reinitCaches := flag.Int("reinit-caches-every", 100, "During bulk import, resets download timestamp (DLTS) and reinitializes the caches from DB using the new DLTS")
 	consensusDownloadTime := flag.String("consensus-download-time", "", "The time the consensus was downloaded. Useful when importing data downloaded in the past")
 	consensusDownloadTime_fmt := flag.String("consensus-download-time-format", "", "The time the consensus was downloaded. Useful when importing data downloaded in the past")
 	extractCDLTfromFilename := flag.Bool("extract-consensus-download-time-from-filename", false, "When importing from a file, it attempts to read the consensus download date from the filename")
 	extractCDLTfromFilenameRegEx := flag.String("filename-regex", "", "When importing from a file and attempting to extract the timestamp from its name, this regex will be used")
+
+	if len(*import_file) == 0 &&
+		(*extractCDLTfromFilename ||
+			len(*consensusDownloadTime) > 0 ||
+			len(*consensusDownloadTime_fmt) > 0 ||
+			len(*extractCDLTfromFilenameRegEx) > 0) {
+		log.Fatal("Incompatible argument. You cannot use -consensus-download-time, -consensus-download-time-format, -extract-consensus-download-time-from-filename or -filename-regex if -import-data-file is not defined.")
+	}
 
 	// Print line options
 	Separator := flag.String("separator", ",", "Separator to be used when data is printed on screen.")
@@ -829,8 +912,6 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 	Flags := flag.Bool("flags", false, "Print node flags")
 	IPperLine := flag.Bool("ip-per-line", false, "If a field has more than one IP in an array, this forces them to be on separate lines and duplicates the rest of the information")
 	NodeInfo := flag.Bool("node-info", false, "Generic node information (shortcut for: nickname, fingerprint, hostname, and exit addresses)")
-
-	//#########
 
 	// Filter options
 	Running := flag.Bool("run", false, "Print nodes which are in rnning state")
@@ -866,6 +947,7 @@ func parseCmdlnArguments(cfg *TorHistoryConfig) {
 	cfg.Tor.ConsensusDLT_fmt = *consensusDownloadTime_fmt
 	cfg.Tor.ExtractDLTfromFilename = *extractCDLTfromFilename
 	cfg.Tor.ExtractDLTfromFilename_regex = *extractCDLTfromFilenameRegEx
+	cfg.DBServer.ReInitCaches = *reinitCaches
 
 	if len(cfg.Tor.ExtractDLTfromFilename_regex) > 0 { // If regex for file extraction is specified then force file extraction bit
 		cfg.Tor.ExtractDLTfromFilename = true
