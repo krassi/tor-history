@@ -380,8 +380,11 @@ func main() {
 			log.Fatal("Bad filename pattern: ", g_config.Tor.Filename)
 		}
 
-		if len(filenames) > 1 {
-			ifPrintln(2, fmt.Sprintf("Bulk import detected (%s). Number of files: %d", g_config.Tor.Filename, len(filenames)))
+		var bench_bulk time.Time
+		total_files := len(filenames)
+		if total_files > 1 {
+			bench_bulk = time.Now()
+			ifPrintln(1, fmt.Sprintf("Bulk import detected (%s). Number of files: %d", g_config.Tor.Filename, total_files))
 			if g_config.Tor.ConsensusDLT != "" {
 				log.Fatal("Bulk import detected however -consensus-download-time is also specified.")
 			}
@@ -409,7 +412,7 @@ func main() {
 				ifPrintln(1, fmt.Sprintf("TorRelay cache reload time: %v", time.Since(bench_cache)))
 			}
 
-			ifPrintln(1, fmt.Sprintf("Importing sequence: %d; filename: %s.", num, fn))
+			ifPrintln(1, fmt.Sprintf("Importing sequence: %d/%d; filename: %s.", num, total_files, fn))
 			tor_response = getConsensus(false, fn)
 			if num != 0 { // shortcut
 				old_miss := extractNewAndUpdatedRelays(previous_tor_response.Relays, tor_response.Relays)
@@ -422,6 +425,9 @@ func main() {
 			logDataImport(&tor_response)
 			processTorResponse(&tor_response)
 			ifPrintln(1, fmt.Sprintf("Batch added in: %v", time.Since(bench_start)))
+		}
+		if !bench_bulk.IsZero() {
+			ifPrintln(1, fmt.Sprintf("Bulk import of %d files in: %v.", total_files, time.Since(bench_bulk)))
 		}
 	}
 }
