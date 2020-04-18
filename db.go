@@ -515,6 +515,9 @@ func (db *DB) addToTorQueries(version string, relays_published string, bridges_p
 	}
 	_, err := db.stmtTorQueries.Exec(version, relays_published, bridges_published, acquisition_ts)
 	if err != nil {
+		fmt.Println("SQL Query broke:")
+		fmt.Println(db.stmtTorQueries)
+		fmt.Printf("%s, %s, %s, %s\n", version, relays_published, bridges_published, acquisition_ts)
 		panic("func addToTorQueries: " + err.Error())
 	}
 	//lastID_int64, err := res.LastInsertId()

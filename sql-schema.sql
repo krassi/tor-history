@@ -192,7 +192,7 @@ GRANT INSERT, UPDATE, SELECT ON tor_history.Exit_addresses_v6 TO 'tor-rw'@'%';
 GRANT INSERT, UPDATE, SELECT ON tor_history.Dir_addresses_v4 TO 'tor-rw'@'%';
 GRANT INSERT, UPDATE, SELECT ON tor_history.Dir_addresses_v6 TO 'tor-rw'@'%';
 
-// Localhost user
+-- Localhost user
 GRANT INSERT, SELECT ON tor_history.NodeFingerprints TO 'tor-rw'@'localhost';
 GRANT INSERT, UPDATE, SELECT ON tor_history.TorRelays TO 'tor-rw'@'localhost';
 GRANT INSERT, SELECT ON tor_history.Countries TO 'tor-rw'@'localhost';
