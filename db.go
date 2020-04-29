@@ -915,3 +915,75 @@ func (db *DB) escapePercentSign(str string) string {
 	}
 	return str
 }
+
+// TOR Query plugin functions
+func (db *DB) getTorRelaysByIDStringList(idList string) map[string](map[string]string) { // cdts generally is g_consensusDLTS
+	ifPrintln(3, "func getTorRelaysByIDStringList: "+idList)
+	defer ifPrintln(3, "getTorRelaysByIDStringList: END")
+
+	if !db.initialized {
+		log.Fatal("Call to a method in uninitialized database initializeLatestRelayDataCache.")
+	}
+
+	lrd := db.SQLQueryTYPEOfMaps("mapOfMaps",
+		`SELECT tr.ID ID, Fingerprint, Nickname, DATE_FORMAT( First_seen, "%Y-%m-%d") as First_seen, 
+		DATE_FORMAT( RecordTimeInserted, "%Y-%m-%d") as RecordTimeInserted, 
+		DATE_FORMAT( RecordLastSeen, "%Y-%m-%d") as RecordLastSeen, 
+		ID_Countries Country, RegionName, CityName, PlatformName, VersionName, ContactName, 
+		DATE_FORMAT( Last_changed_address_or_port, "%Y-%m-%d") as Last_changed_address_or_port, 
+		ExitPolicy, ExitPolicySummary, ExitPolicyV6Summary, jsd
+		FROM TorRelays tr
+		LEFT JOIN NodeFingerprints nf ON tr.ID_NodeFingerprints = nf.ID 
+		LEFT JOIN Regions r ON tr.ID_Regions = r.ID
+		LEFT JOIN Cities c ON ID_Cities = c.ID
+		LEFT JOIN Platforms p ON ID_Platforms = p.ID
+		LEFT JOIN Versions v ON ID_Versions = v.ID
+		LEFT JOIN Contacts ct ON ID_Contacts = ct.ID
+		LEFT JOIN ExitPolicies ep ON ID_ExitPolicies = ep.ID
+		LEFT JOIN ExitPolicySummaries eps ON ID_ExitPolicySummaries = eps.ID
+		LEFT JOIN ExitPolicyV6Summaries eps6 ON ID_ExitPolicyV6Summaries = eps6.ID 
+		WHERE tr.ID IN (`+idList+`);`).(map[string](map[string]string))
+	return lrd
+}
+
+func (db *DB) getLatestTRsIDsByCountryCode(cc string) map[string]string {
+	ifPrintln(3, "func getLatestTRsIDsByCountryCode: "+cc)
+	defer ifPrintln(3, "func getLatestTRsIDsByCountryCode: END")
+
+	result := make(map[string]string)
+	matched, err := regexp.MatchString(`^[a-z][a-z]$`, cc)
+	if !matched || err != nil {
+		return result
+	}
+	query := fmt.Sprintf("SELECT ID, ID_NodeFingerprints FROM TorRelays WHERE (ID_NodeFingerprints, RecordLastSeen) IN (SELECT ID_NodeFingerprints, max(RecordLastSeen) FROM TorRelays WHERE ID_Countries='%s' GROUP BY ID_NodeFingerprints)", cc)
+	result = db.SQLQueryKeyValue(query)
+	return result
+}
+
+func (db *DB) getLatestTRsIDsByEmail(email string) map[string]string {
+	ifPrintln(3, "func getLatestTRsIDsByEmail: "+email)
+	defer ifPrintln(3, "func getLatestTRsIDsByEmail: END")
+
+	result := make(map[string]string)
+	email = db.addslashes(email)
+	query := fmt.Sprintf(`SELECT max(tr.ID) as ID, tr.ID_NodeFingerprints as ID_NodeFingerprints FROM Contacts c LEFT JOIN TorRelays tr ON c.ID = tr.ID_Contacts WHERE ContactName like '%%%s%%' GROUP BY tr.ID_NodeFingerprints;`, email)
+	result = db.SQLQueryKeyValue(query)
+	return result
+}
+
+func (db *DB) getLatestTRsIDsByIP(ip string) map[string]string {
+	ifPrintln(3, "func getLatestTRsIDsByIP: "+ip)
+	defer ifPrintln(3, "func getLatestTRsIDsByIP: END")
+	result := make(map[string]string) // return value
+
+	// Validate IP
+	checkIP := net.ParseIP(ip)
+	if checkIP == nil {
+		return result
+	}
+	ip = checkIP.String()
+
+	query := fmt.Sprintf("SELECT ID, ID_NodeFingerprints FROM TorRelays WHERE (ID_NodeFingerprints, RecordLastSeen) IN (SELECT v4.ID_NodeFingerprints, max(tr.RecordLastSeen) as RecordLastSeen FROM Exit_addresses_v4 v4 LEFT JOIN TorRelays tr on v4.ID_NodeFingerprints = tr.ID_NodeFingerprints  WHERE v4.ip4 = INET_ATON(\"%s\") GROUP BY ID_NodeFingerprints);", ip)
+	result = db.SQLQueryKeyValue(query)
+	return result
+}
